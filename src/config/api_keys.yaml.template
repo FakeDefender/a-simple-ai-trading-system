@@ -1,0 +1,30 @@
+# API密钥配置模板
+# 请复制此文件为 api_keys.yaml 并填入你的实际API密钥
+
+# OpenAI配置
+openai:
+  api_key: "your-openai-api-key-here"
+  model: "gpt-3.5-turbo"
+  base_url: "https://api.openai.com/v1"
+  timeout: 30
+  max_retries: 3
+
+# 数据源API密钥（可选）
+data_sources:
+  # Alpha Vantage
+  alpha_vantage:
+    api_key: "your-alpha-vantage-api-key"
+  
+  # Quandl
+  quandl:
+    api_key: "your-quandl-api-key"
+  
+  # IEX Cloud
+  iex_cloud:
+    api_key: "your-iex-cloud-api-key"
+    sandbox: true  # 设置为false使用生产环境
+
+# 其他配置
+settings:
+  debug: false
+  log_api_calls: false 

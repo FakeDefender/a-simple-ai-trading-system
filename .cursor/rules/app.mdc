@@ -1,0 +1,80 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+您精通 Flutter、Dart、Riverpod、Freezed、Flutter Hooks 和 Supabase。
+
+关键原则
+- 编写简洁、专业的 Dart 代码，并提供准确的示例。
+- 在适当的情况下使用函数式和声明式编程模式。
+- 优先使用组合，而非继承。
+- 使用带有助动词的描述性变量名（例如 isLoading、hasError）。
+- 结构化文件：导出的 Widget、子 Widget、辅助函数、静态内容、类型。
+
+Dart/Flutter
+- 对不可变 Widget 使用常量构造函数。
+- 利用 Freezed 实现不可变状态类和联合。
+- 对简单的函数和方法使用箭头语法。
+- 对于单行 getter 和 setter，优先使用表达式主体。
+- 使用尾随逗号以获得​​更好的格式和差异显示。
+
+错误处理和验证
+- 在视图中使用 SelectableText.rich 而不是 SnackBars 实现错误处理。
+- 在 SelectableText.rich 中用红色显示错误以提高可见性。
+- 处理显示屏幕内的空状态。
+- 使用 AsyncValue 进行正确的错误处理和加载状态。
+
+Riverpod 特定指南
+- 使用 @riverpod 注解生成提供程序。
+- 优先使用 AsyncNotifierProvider 和 NotifierProvider，而不是 StateProvider。
+- 避免使用 StateProvider、StateNotifierProvider 和 ChangeNotifierProvider。
+- 使用 ref.invalidate() 手动触发提供程序更新。
+- 在处理小部件时，实现正确的异步操作取消机制。
+
+性能优化
+- 尽可能使用 const 小部件来优化重建。
+- 实现列表视图优化（例如 ListView.builder）。
+- 使用 AssetImage 处理静态图片，使用 cached_network_image 处理远程图片。
+- 为 Supabase 操作（包括网络错误）实现正确的错误处理。
+
+关键约定
+1. 使用 GoRouter 或 auto_route 进行导航和深度链接。
+2. 针对 Flutter 性能指标（首次有效绘制、可交互时间）进行优化。
+3. 优先使用无状态 Widget：
+- 对于状态相关的 Widget，结合使用 ConsumerWidget 和 Riverpod。
+- 结合使用 Riverpod 和 Flutter Hooks 时，使用 HookConsumerWidget。
+
+UI 和样式
+- 使用 Flutter 内置 Widget 并创建自定义 Widget。
+- 使用 LayoutBuilder 或 MediaQuery 实现响应式设计。
+- 使用主题背景，确保整个应用的样式一致。
+- 使用 Theme.of(context).textTheme.titleLarge 代替 heading6，使用 headingSmall 代替 heading5 等。
+
+模型和数据库约定
+- 在数据库表中包含 createdAt、updatedAt 和 isDeleted 字段。
+- 对模型使用 @JsonSerializable(fieldRename: FieldRename.snake)。
+- 对只读字段实现 @JsonKey(includeFromJson: true, includeToJson: false)。
+
+Widget 和 UI 组件
+- 创建小型私有 Widget 类，而不是像 Widget _build.... 这样的函数。
+- 实现 RefreshIndicator 以实现下拉刷新功能。
+- 在 TextField 中，设置合适的 textCapitalization、keyboardType 和 textInputAction。
+- 使用 Image.network 时，务必包含 errorBuilder。
+
+其他
+- 使用 log 而不是 print 进行调试。
+- 适当时使用 Flutter Hooks / Riverpod Hooks。
+- 保持每行不超过 80 个字符，对于多参数函数，请在右括号前添加逗号。
+- 使用 @JsonValue(int) 来处理需要访问数据库的枚举。
+
+代码生成
+- 使用 build_runner 从注解（Freezed、Riverpod、JSON 序列化）生成代码。
+- 修改注解类后，运行“flutter pub run build_runner build --delete-conflicting-outputs”。
+
+文档
+- 记录复杂的逻辑和难以理解的代码决策。
+- 遵循 Flutter、Riverpod 和 Supabase 官方文档，了解最佳实践。
+
+
+请参阅 Flutter、Riverpod 和 Supabase 文档，了解 Widget、状态管理和后端集成的最佳实践。
