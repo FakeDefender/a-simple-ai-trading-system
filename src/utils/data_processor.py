@@ -55,6 +55,10 @@ class DataProcessor:
             # 确保数据按日期排序
             data = data.sort_index()
             
+            # 确保数值列为float类型
+            numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+            data[numeric_columns] = data[numeric_columns].astype(float)
+            
             # 检查数据量是否足够
             if len(data) < 50:
                 self.logger.warning(f"数据量不足({len(data)}行)，某些长期指标可能不准确")
@@ -246,7 +250,7 @@ class DataProcessor:
     
     def calculate_market_indicators(self, market_summary: Dict) -> Dict:
         """计算市场指标"""
-        self.logger.info("从汇总数据计算市场指标，数据键: %s", list(market_summary.keys()))
+        self.logger.info("从汇总数据计算市场指标")
         
         # 计算趋势强度
         trend_strength = self._calculate_trend_strength(market_summary)

@@ -28,7 +28,7 @@ class DataLoader:
         self.data_storage = DataStorage(config)
         self.data_processor = DataProcessor()
         
-    def load_data(self, symbol: str, interval: str, force_update: bool = False) -> pd.DataFrame:
+    def load_data(self, symbol: str, interval: str, force_update: bool = True) -> pd.DataFrame:
         """加载市场数据"""
         try:
             self.logger.info(f"开始加载数据 - 交易品种: {symbol}, 时间间隔: {interval}, 强制更新: {force_update}")
@@ -86,43 +86,30 @@ class DataLoader:
             interval (str): 时间间隔，支持 'd'（日线）, 'w'（周线）, 'm'（月线）
             
         Returns:
-            pd.DataFrame: 获取的数据，包含 OHLCV 数据和技术指标
+            pd.DataFrame: 获取的原始OHLCV数据
         """
         try:
             # 构建Stooq数据URL
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=365)  # 默认获取一年的数据
-            
+            # 使用配置文件中的时间范围
+            start_date = pd.to_datetime(self.config['data']['start_date'])
+            end_date = pd.to_datetime(self.config['data']['end_date'])
             url = f"https://stooq.com/q/d/l/?s={symbol}&d1={start_date.strftime('%Y%m%d')}&d2={end_date.strftime('%Y%m%d')}&i={interval}"
-            
             # 使用pandas直接读取CSV数据
             df = pd.read_csv(url)
             logger.info(f"原始数据列名: {df.columns}")
-            
             # 重命名列以匹配标准格式
             df.columns = ['date', 'open', 'high', 'low', 'close', 'volume']
             logger.info(f"重命名后的列名: {df.columns}")
-            
             # 转换日期列
             df['date'] = pd.to_datetime(df['date'])
+            # 确保数值列为float类型
+            numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+            df[numeric_columns] = df[numeric_columns].astype(float)
             df.set_index('date', inplace=True)
-            
             # 按日期排序
             df.sort_index(inplace=True)
             
-            # 计算技术指标
-            logger.info("开始计算技术指标...")
-            df = self.data_processor.calculate_technical_indicators(df)
-            logger.info(f"技术指标计算完成，列名: {df.columns}")
-            logger.info(f"技术指标数据示例:\n{df.tail()}")
-            
-            # 验证RSI是否存在
-            if 'rsi' in df.columns:
-                logger.info(f"RSI值示例:\n{df['rsi'].tail()}")
-            else:
-                logger.error("RSI列不存在！")
-            
-            logger.info(f"成功从Stooq获取数据并计算技术指标: {symbol} {interval}")
+            logger.info(f"成功从Stooq获取原始数据: {symbol} {interval}")
             return df
             
         except Exception as e:

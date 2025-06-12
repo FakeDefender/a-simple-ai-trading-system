@@ -3,14 +3,12 @@ import os
 from src.agents.ml_strategy_agent import MLStrategyAgent
 from src.utils.config_loader import load_config
 from src.utils.data_loader import DataLoader
-
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
 def main():
     """主函数"""
     try:
@@ -28,7 +26,7 @@ def main():
         interval = config['data']['interval']
         logger.info(f"开始获取数据 - 交易品种: {symbol}, 时间间隔: {interval}")
         
-        market_data = data_loader.load_data(symbol, interval, force_update=True)
+        market_data = data_loader.load_data(symbol, interval)
         if market_data is None:
             logger.error("获取市场数据失败")
             return
@@ -38,38 +36,13 @@ def main():
         
         # 检查数据完整性并使用完整数据
         logger.info(f"原始数据: {len(market_data)}行")
-        complete_data = market_data.iloc[20:].copy()  # 跳过前20行，确保主要指标完整
-        logger.info(f"使用完整数据: {len(complete_data)}行 (跳过前20行)")
+        complete_data = market_data.iloc[50:].copy()
+        logger.info(f"使用完整数据: {len(complete_data)}行 (跳过前50行)")
         
         # 创建策略代理
         logger.info("创建策略代理")
         strategy_agent = MLStrategyAgent(config, data_loader)
         logger.info("策略代理创建成功")
-        
-        # 准备市场数据摘要（使用完整数据的最新值）
-        market_summary = {
-            'symbol': symbol,
-            'interval': interval,
-            'latest_price': complete_data['close'].iloc[-1],
-            'moving_averages': {
-                'ma5': complete_data['ma5'].iloc[-1],
-                'ma10': complete_data['ma10'].iloc[-1],
-                'ma20': complete_data['ma20'].iloc[-1]
-            },
-            'rsi': complete_data['rsi'].iloc[-1],
-            'config': config
-        }
-        
-        logger.info("市场数据准备完成")
-        logger.info(f"最新价格: {market_summary['latest_price']}")
-        logger.info(f"移动平均线: {market_summary['moving_averages']}")
-        logger.info(f"RSI: {market_summary['rsi']}")
-        
-        # 开始市场分析
-        logger.info("开始市场分析")
-        market_indicators = data_loader.data_processor.calculate_market_indicators(market_summary)
-        logger.info(f"市场分析完成 - 趋势强度: {market_indicators['trend_strength']:.4f}, 市场强度: {market_indicators['market_strength']:.4f}, 波动性: {market_indicators['volatility']:.4f}")
-        
         # 生成交易信号（传入完整数据）
         signals = strategy_agent.generate_signals(complete_data)
         logger.info("交易信号生成完成")

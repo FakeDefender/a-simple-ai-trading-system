@@ -2,17 +2,16 @@
 data:
   source: 'api'  # 数据源类型：csv, database, api
   path: 'data/test_data.csv'  # 数据文件路径
-  start_date: '2020-01-01'  # 开始日期
-  end_date: '2020-03-01'    # 结束日期
+  start_date: '2024-01-01'  # 开始日期
+  end_date: '2024-06-01'    # 结束日期
   symbols: ['BTC/USD', 'ETH/USD']  # 交易品种
   timeframe: '1m'  # 时间周期：1m, 5m, 15m, 1h, 4h, 1d
-  symbol: 'aapl.us'  # 苹果股票 - 测试优化策略
+  symbol: 'tsla.us'  # 苹果股票 - 测试优化策略
   interval: 'd'      # 日线数据
   storage:
     path: 'data/storage'
     raw_data_dir: 'raw'
     processed_data_dir: 'processed'
-
 # 策略配置
 strategy:
   type: 'intraday_swing'  # 策略类型：trend_following, mean_reversion, hybrid, intraday_swing
@@ -71,7 +70,7 @@ execution:
 
 # 回测配置
 backtest:
-  initial_capital: 1000000  # 初始资金
+  initial_capital: 10000000  # 初始资金
   risk_free_rate: 0.02  # 无风险利率
   benchmark: 'SPY'  # 基准指数
   transaction_costs: true  # 是否考虑交易成本
