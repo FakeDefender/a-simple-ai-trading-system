@@ -6,7 +6,7 @@
 
 ### 核心功能
 - **多智能体协作**：策略开发者、风险分析师、交易顾问三个AI智能体协同工作
-- **LLM驱动策略生成**：使用OpenAI GPT模型动态生成交易策略
+- **LLM驱动策略生成**：使用大模型动态生成交易策略
 - **全面技术分析**：支持20+种技术指标（MA、RSI、MACD、布林带等）
 - **智能风险管理**：动态止损、仓位管理、风险指标监控
 - **完整回测系统**：历史数据回测、绩效分析、风险评估
@@ -51,7 +51,7 @@ AI量化交易系统
 
 1. **克隆项目**
 ```bash
-git clone <repository-url>
+git clone https://github.com/FakeDefender/a-simple-ai-trading-system.git
 cd trading-ai-system
 ```
 
@@ -286,3 +286,5 @@ for symbol in symbols:
 - 发送邮件：1781853359@qq.com
 
 ---
+
+**⭐ 如果这个项目对你有帮助，请给个星标支持！** 
