@@ -1,91 +1,12 @@
 # 数据配置
 data:
   source: 'api'  # 数据源类型：csv, database, api
-  path: 'data/test_data.csv'  # 数据文件路径
-  start_date: '2024-01-01'  # 开始日期
-  end_date: '2024-06-01'    # 结束日期
+  start_date: '2025-01-01'  # 开始日期
+  end_date: '2025-06-10'    # 结束日期
   symbols: ['BTC/USD', 'ETH/USD']  # 交易品种
   timeframe: '1m'  # 时间周期：1m, 5m, 15m, 1h, 4h, 1d
   symbol: 'tsla.us'  # 苹果股票 - 测试优化策略
   interval: 'd'      # 日线数据
   storage:
-    path: 'data/storage'
     raw_data_dir: 'raw'
     processed_data_dir: 'processed'
-# 策略配置
-strategy:
-  type: 'intraday_swing'  # 策略类型：trend_following, mean_reversion, hybrid, intraday_swing
-  base_position_size: 1.0  # 基础仓位大小
-  max_position_size: 10.0  # 最大仓位大小
-  rsi_period: 14
-  rsi_oversold_threshold: 30
-  rsi_overbought_threshold: 70
-  entry_rules:
-    technical_indicators:
-      rsi:
-        oversold: 30
-        overbought: 70
-      macd:
-        signal_cross: true
-  exit_rules:
-    stop_loss: 0.02  # 止损比例
-    take_profit: 0.05  # 止盈比例
-    trailing_stop: 0.01  # 追踪止损比例
-  name: 'ml_strategy'
-  model:
-    type: 'xgboost'
-    params:
-      max_depth: 6
-      learning_rate: 0.1
-      n_estimators: 100
-  features:
-    - 'ma5'
-    - 'ma10'
-    - 'ma20'
-    - 'rsi'
-    - 'macd'
-    - 'signal'
-
-# 风险配置
-risk:
-  max_drawdown: 0.2  # 最大回撤限制
-  var_confidence: 0.95  # VaR置信度
-  position_limit: 0.1  # 单个品种持仓限制
-  correlation_threshold: 0.7  # 相关性阈值
-  volatility_threshold: 0.3  # 波动率阈值
-  stop_loss: 0.05        # 止损比例
-  take_profit: 0.1       # 止盈比例
-  max_position: 1.0  # 最大仓位
-  max_position_size: 0.1  # 最大仓位比例
-
-# 执行配置
-execution:
-  commission_rate: 0.0003  # 手续费率
-  slippage: 0.0001  # 滑点
-  market_impact_factor: 0.1  # 市场冲击因子
-  max_trade_size: 1000000  # 最大交易规模
-  min_trade_size: 1000  # 最小交易规模
-  order_types: ['market', 'limit', 'stop']  # 支持的订单类型
-  time_in_force: ['DAY', 'GTC', 'IOC']  # 订单有效期
-
-# 回测配置
-backtest:
-  initial_capital: 10000000  # 初始资金
-  risk_free_rate: 0.02  # 无风险利率
-  benchmark: 'SPY'  # 基准指数
-  transaction_costs: true  # 是否考虑交易成本
-  position_sizing: true  # 是否使用仓位管理
-  rebalance_frequency: 'monthly'  # 再平衡频率
-  commission: 0.001       # 手续费率
-  slippage: 0.001        # 滑点率
-
-# 输出配置
-output:
-  directory: 'results'  # 结果输出目录
-  save_trades: true  # 是否保存交易记录
-  save_positions: true  # 是否保存持仓记录
-  save_equity: true  # 是否保存权益曲线
-  save_equity_curve: true
-  save_metrics: true  # 是否保存性能指标
-  plot_results: true  # 是否绘制结果图表
-  log_level: 'INFO'  # 日志级别 
