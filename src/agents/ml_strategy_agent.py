@@ -59,7 +59,7 @@ class MLStrategyAgent:
 
     def __init__(self, config: Dict[str, Any], data_loader: DataLoader, strategy_params=None):
         """
-        初始化机器学习策略代理
+        初始化策略代理
         
         Args:
             config: 配置字典
@@ -154,16 +154,6 @@ class MLStrategyAgent:
     def set_params(self, **kwargs):
         self.strategy_params.update(kwargs)
 
-    def _initialize_strategy_params(self) -> Dict:
-        """初始化策略参数"""
-        return {
-            'trend_threshold': 0.01,
-            'market_strength_threshold': 0.1,
-            'volatility_threshold': 0.01,
-            'position_size': 0.2,
-            'stop_loss_atr': 2.0,
-            'take_profit_atr': 1.5
-        }
 
     def _save_backtest_results(self, backtest_results: Dict, performance: Dict, risk_metrics: Dict, recommendations: List[str]):
         """
