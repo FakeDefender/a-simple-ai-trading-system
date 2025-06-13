@@ -69,10 +69,11 @@ pip install -r requirements.txt
 ```
 
 4. **配置API密钥**
+**建议配置到环境变量中**
+**项目中使用的是环境变量DEEPSEEK_API_KEY，如果使用其他大模型，请更改相关配置**
 ```bash
 # 复制配置模板
 cp src/config/api_keys.yaml.template src/config/api_keys.yaml
-
 # 编辑配置文件，添加你的OpenAI API密钥
 # openai:
 #   api_key: "your-openai-api-key"

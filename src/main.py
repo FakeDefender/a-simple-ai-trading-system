@@ -69,8 +69,25 @@ def main():
         recommendations = strategy_agent._generate_recommendations(backtest_results)
         logger.info(f"优化建议: {recommendations}")
         
+        # 获取基准数据并对比分析 
+        logger.info("获取标普500基准数据")
+        benchmark_data = data_loader.get_benchmark_data()
+        if benchmark_data is not None and not benchmark_data.empty:
+            equity_curve = backtest_results["equity_curve"]
+            beta = strategy_agent._calculate_beta(equity_curve, benchmark_data)
+            correlation = strategy_agent._calculate_correlation(equity_curve, benchmark_data)
+            logger.info(f"策略与标普500的Beta: {beta:.4f}")
+            logger.info(f"策略与标普500的相关性: {correlation:.4f}")
+            # 可选：将基准对比结果加入回测结果保存
+            extra_metrics = {"beta": beta, "correlation": correlation}
+        else:
+            logger.warning("未能获取到标普500基准数据，无法进行对比分析")
+            extra_metrics = {"beta": None, "correlation": None}
+        
         # 保存回测结果
         logger.info("保存回测结果到文件")
+        # 合并extra_metrics到performance_metrics
+        performance_metrics.update(extra_metrics)
         strategy_agent._save_backtest_results(
             backtest_results, 
             performance_metrics, 
