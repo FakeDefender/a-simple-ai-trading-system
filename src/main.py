@@ -1,5 +1,6 @@
 import logging
 import os
+import pandas as pd
 from src.agents.ml_strategy_agent import MLStrategyAgent
 from src.utils.config_loader import load_config
 from src.utils.data_loader import DataLoader
@@ -70,18 +71,30 @@ def main():
         logger.info(f"优化建议: {recommendations}")
         
         # 获取基准数据并对比分析 
-        logger.info("获取标普500基准数据")
+        logger.info("获取纳斯达克100基准数据")
         benchmark_data = data_loader.get_benchmark_data()
         if benchmark_data is not None and not benchmark_data.empty:
-            equity_curve = backtest_results["equity_curve"]
+            # 生成对齐的equity_curve
+            equity_curve = strategy_agent._calculate_equity_curve(
+                backtest_results["trades"],
+                initial_capital=100000,  # 或从config读取
+                all_dates=benchmark_data.index
+            )
             beta = strategy_agent._calculate_beta(equity_curve, benchmark_data)
             correlation = strategy_agent._calculate_correlation(equity_curve, benchmark_data)
-            logger.info(f"策略与标普500的Beta: {beta:.4f}")
-            logger.info(f"策略与标普500的相关性: {correlation:.4f}")
+            logger.info(f"策略与纳斯达克100的Beta: {beta}")
+            logger.info(f"策略与纳斯达克100的相关性: {correlation}")
+            # 计算基准指数收益率和超额收益
+            benchmark_return = benchmark_data['close'].iloc[-1] / benchmark_data['close'].iloc[0] - 1
+            strategy_return = equity_curve.iloc[-1] / equity_curve.iloc[0] - 1
+            alpha = strategy_return - benchmark_return
+            logger.info(f"策略总收益率: {strategy_return:.2%}")
+            logger.info(f"基准指数收益率: {benchmark_return:.2%}")
+            logger.info(f"超额收益（Alpha）: {alpha:.2%}")
             # 可选：将基准对比结果加入回测结果保存
-            extra_metrics = {"beta": beta, "correlation": correlation}
+            extra_metrics = {"beta": beta, "correlation": correlation, "strategy_return": strategy_return, "benchmark_return": benchmark_return, "alpha": alpha}
         else:
-            logger.warning("未能获取到标普500基准数据，无法进行对比分析")
+            logger.warning("未能获取到纳斯达克100基准数据，无法进行对比分析")
             extra_metrics = {"beta": None, "correlation": None}
         
         # 保存回测结果

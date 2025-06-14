@@ -5,7 +5,7 @@ data:
   end_date: '2025-06-10'    # 结束日期
   symbols: ['BTC/USD', 'ETH/USD']  # 交易品种
   timeframe: '1m'  # 时间周期：1m, 5m, 15m, 1h, 4h, 1d
-  symbol: 'tsla.us'  # 苹果股票 - 测试优化策略
+  symbol: 'aapl.us'  # 苹果股票 - 测试优化策略
   interval: 'd'      # 日线数据
   storage:
     raw_data_dir: 'raw'

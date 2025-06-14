@@ -323,7 +323,7 @@ class DataLoader:
         
     def get_benchmark_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
         """
-        获取基准指数数据（使用标普500指数）
+        获取基准指数数据（使用纳斯达克100指数）
         
         Args:
             start_date: 开始日期，格式：YYYY-MM-DD
@@ -340,16 +340,23 @@ class DataLoader:
                 end_date = self.config.get('data', {}).get('end_date')
                 
             # 构建Stooq数据URL
-            url = f"https://stooq.com/q/d/l/?s=^spx&d1={start_date.replace('-', '')}&d2={end_date.replace('-', '')}&i=d"
+            url = f"https://stooq.com/q/d/l/?s=^ndx&d1={start_date.replace('-', '')}&d2={end_date.replace('-', '')}&i=d"
             
-            # 使用pandas直接读取CSV数据
-            benchmark = pd.read_csv(url)
+            # 使用pandas直接读取CSV数据，尝试指定编码
+            try:
+                benchmark = pd.read_csv(url, encoding='utf-8')
+            except UnicodeDecodeError:
+                benchmark = pd.read_csv(url, encoding='ISO-8859-1')
             
             # 重命名列以匹配标准格式
             benchmark.columns = ['date', 'open', 'high', 'low', 'close', 'volume']
             
-            # 转换日期列
-            benchmark['date'] = pd.to_datetime(benchmark['date'])
+            # 处理缺失值，删除含有缺失值的行
+            benchmark.dropna(inplace=True)
+            
+            # 修正日期列乱码和格式
+            benchmark['date'] = pd.to_datetime(benchmark['date'], errors='coerce')
+            benchmark = benchmark[benchmark['date'].notnull()]
             benchmark.set_index('date', inplace=True)
             
             return benchmark

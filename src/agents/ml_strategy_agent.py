@@ -265,6 +265,15 @@ class MLStrategyAgent:
             Dict: 包含各个智能体建议的字典
         """
         try:
+            # 新增：数据长度保护
+            if data is None or len(data) < 2:
+                self.logger.warning("数据长度不足，无法生成智能体建议")
+                return {
+                    "strategy_developer": {},
+                    "risk_analyst": {},
+                    "trading_advisor": {}
+                }
+            
             # 计算技术指标
             # logger.info("开始计算技术指标...")
             # data = self.data_processor.calculate_technical_indicators(data)
@@ -384,36 +393,48 @@ class MLStrategyAgent:
     def _get_strategy_developer_advice(self, market_summary: Dict) -> Dict:
         """
         获取策略开发者建议
-        
         Args:
             market_summary (Dict): 包含当前和历史市场数据的摘要
-            
         Returns:
             Dict: 策略建议
         """
         try:
-            # 准备提示词
+            # 优化后的提示词，要求动态调整参数，避免输出相同参数
             prompt = f"""
-            作为策略开发者，请分析以下市场数据并提供交易策略建议：
-            
+            你是一个量化策略开发专家，请根据下方市场数据，动态调整策略参数，确保参数能随市场状态（如波动率、趋势、风险等级等）自适应变化，避免长期输出相同参数。
+
             当前市场数据：
             {json.dumps(market_summary['current'], indent=2)}
-            
+
             历史数据统计：
             {json.dumps(market_summary['statistics'], indent=2)}
-            
-            请严格按照以下格式返回标准 JSON，不要加任何注释、解释或 markdown 格式。
-            
-            策略要求：
-            1. 入场条件适中，建议2-3个条件，优先趋势跟随策略
-            2. RSI条件：买入时用 "rsi > 45" 且 "rsi < 65"，避免极端值
-            3. MACD条件：买入时用 "macd > signal" 或 "macd > -1.0"
-            4. 价格趋势：买入时用 "price > ma5" 或 "ma5 > ma20"
-            5. 出场条件：用 "rsi > 70" 或 "price < ma10"
-            6. 确保是趋势跟随策略，不要逆势交易
-            7. 考虑历史波动率和趋势方向
-            
-            {self.AGENT_OUTPUT_FORMAT['strategy_developer']}
+
+            策略参数建议要求：
+            1. trend_threshold（趋势阈值）：根据市场趋势强度和方向动态调整，区间[-2, 2]，趋势越强，绝对值越大，震荡市建议接近0。
+            2. market_strength_threshold（市场强度阈值）：根据成交量、波动率、rsi等指标动态调整，区间[0, 1]。
+            3. volatility_threshold（波动率阈值）：根据历史波动率动态调整，区间[0, 0.1]，高波动时建议大于0.05。
+            4. position_size（仓位）：根据风险等级、趋势强度、波动率动态调整，区间[0.05, 0.3]，高风险时建议减小仓位。
+            5. stop_loss_atr、take_profit_atr：根据市场波动率和风险等级动态调整，区间分别为[1, 3]和[1, 5]。
+            6. 请不要每次都输出完全相同的参数，要体现对市场状态的响应。
+            7. 参数建议要有合理的经济含义，避免极端值。
+
+            请严格返回如下JSON格式：
+            {{
+                "strategy_name": "...",
+                "strategy_description": "...",
+                "parameters": {{
+                    "trend_threshold": ...,
+                    "market_strength_threshold": ...,
+                    "volatility_threshold": ...,
+                    "position_size": ...,
+                    "stop_loss_atr": ...,
+                    "take_profit_atr": ...
+                }},
+                "entry_conditions": [...],
+                "exit_conditions": [...],
+                "position_management": {{...}},
+                "risk_management": {{...}}
+            }}
             """
             # 发送提示词到LLM
             response = self.llm.call(prompt)
@@ -497,11 +518,10 @@ class MLStrategyAgent:
             self.logger.error(f"获取交易顾问建议失败: {str(e)}")
             return {}
 
-    def _check_long_entry_conditions(self, current_data: pd.Series, market_indicators: Dict, strategy_advice: Dict) -> bool:
-        """检查做多入场条件 - 更灵活的条件判断
-        修正：做多信号应为 rsi > rsi_long
-        """
+    def _check_long_entry_conditions(self, current_data: pd.Series, market_indicators: Dict, strategy_advice: Dict, min_entry_conditions=None) -> bool:
+        """检查做多入场条件 - 更灵活的条件判断"""
         params = self.strategy_params
+        min_entry_conditions = min_entry_conditions or params.get('min_entry_conditions', 2)
         rsi = current_data.get('rsi', 50)
         macd = current_data.get('macd', 0)
         signal = current_data.get('signal', 0)
@@ -510,48 +530,28 @@ class MLStrategyAgent:
         volume_ratio = current_data.get('volume_ratio', 1)
         macd_prev = current_data.get('macd_prev', 0)
         bb_lower = current_data.get('bb_lower', 0)
-        
         conditions_met = 0
-        total_conditions = 2  # 只统计主条件
-        
-        # 1. RSI条件 - 放宽条件
-        if rsi > params['rsi_long'] * 0.8:
+        # 1. RSI条件
+        if rsi > params['rsi_long'] * 0.9:
             conditions_met += 1
-        else:
-            self.logger.info(f"做多失败: RSI={rsi} <= {params['rsi_long']*0.8}")
-        
-        # 2. MACD条件 - 放宽条件
+        # 2. MACD条件
         if macd > signal or (macd > macd_prev):
             conditions_met += 1
-        else:
-            self.logger.info(f"做多失败: MACD={macd}, signal={signal}, macd_prev={macd_prev}")
-        
-        # 3. 价格条件 - 放宽条件
-        if close_price > ma5 * 0.98:
+        # 3. 价格条件
+        if close_price > ma5 * 0.99:
             conditions_met += 1
-        else:
-            self.logger.info(f"做多失败: close={close_price} <= ma5*0.98={ma5*0.98}")
-        
-        # 4. 成交量条件 - 更宽松
-        if volume_ratio > 0.7:
+        # 4. 成交量条件
+        if volume_ratio > 0.9:
             conditions_met += 1
-            total_conditions += 1
-        else:
-            self.logger.info(f"做多失败: volume_ratio={volume_ratio} <= 0.5")
-        
-        # 5. 布林带下轨辅助 - 完全可选，不计入总条件
-        if bb_lower and close_price < bb_lower * 1.02:
-            self.logger.info(f"布林带辅助满足: close={close_price} < bb_lower*1.02={bb_lower*1.02}")
-        else:
-            if bb_lower:
-                self.logger.info(f"布林带辅助未满足: close={close_price} >= bb_lower*1.02={bb_lower*1.02}")
-        return conditions_met >= params['min_entry_conditions']
+        # 5. 布林带辅助
+        if bb_lower and close_price < bb_lower * 1.01:
+            conditions_met += 1
+        return conditions_met >= min_entry_conditions
 
-    def _check_short_entry_conditions(self, current_data: pd.Series, market_indicators: Dict, strategy_advice: Dict) -> bool:
-        """检查做空入场条件 - 更灵活的条件判断
-        修正：做空信号应为 rsi < rsi_short
-        """
+    def _check_short_entry_conditions(self, current_data: pd.Series, market_indicators: Dict, strategy_advice: Dict, min_entry_conditions=None) -> bool:
+        """检查做空入场条件 - 更灵活的条件判断"""
         params = self.strategy_params
+        min_entry_conditions = min_entry_conditions or params.get('min_entry_conditions', 2)
         rsi = current_data.get('rsi', 50)
         macd = current_data.get('macd', 0)
         signal = current_data.get('signal', 0)
@@ -560,23 +560,23 @@ class MLStrategyAgent:
         volume_ratio = current_data.get('volume_ratio', 1)
         macd_prev = current_data.get('macd_prev', 0)
         bb_upper = current_data.get('bb_upper', float('inf'))
-        
         conditions_met = 0
-        total_conditions = 4
-        # 修正方向：做空信号应为 rsi < rsi_short
-        if rsi < params['rsi_short']:
+        # 1. RSI条件
+        if rsi < params['rsi_short'] * 1.1:
             conditions_met += 1
+        # 2. MACD条件
         if macd < signal - params['macd_trend'] or (macd < macd_prev):
             conditions_met += 1
+        # 3. 价格条件
         if close_price < ma5 * params['ma5_offset_short']:
             conditions_met += 1
-        if volume_ratio > params['volume_ratio']:
+        # 4. 成交量条件
+        if volume_ratio > params['volume_ratio'] * 0.9:
             conditions_met += 1
-        # 可选：布林带上轨辅助
-        if bb_upper and close_price > bb_upper * params['bb_upper_offset']:
+        # 5. 布林带辅助
+        if bb_upper and close_price > bb_upper * params['bb_upper_offset'] * 0.99:
             conditions_met += 1
-            total_conditions += 1
-        return conditions_met >= params['min_entry_conditions']
+        return conditions_met >= min_entry_conditions
 
     def _check_long_exit_conditions(self, current_data: pd.Series, market_indicators: Dict, strategy_advice: Dict) -> bool:
         """检查做多出场条件"""
@@ -811,29 +811,39 @@ class MLStrategyAgent:
                 "trade_statistics": {"total_trades": 0, "win_rate": 0, "avg_profit": 0, "max_drawdown": 0}
             }
 
-    def _calculate_equity_curve(self, trades, initial_capital):
+    def _calculate_equity_curve(self, trades, initial_capital, all_dates=None):
         """
-        计算权益曲线
+        计算每日权益曲线，index与基准数据对齐
         """
         try:
             if not trades:
+                if all_dates is not None:
+                    return pd.Series([initial_capital]*len(all_dates), index=all_dates)
                 return pd.Series([initial_capital])
-                
-            equity = [initial_capital]
-            equity_times = [trades[0]['entry_time']]  # 从第一笔交易开始
+            
+            # 生成一个以所有日期为索引的Series
+            if all_dates is None:
+                # 自动推断日期范围
+                start_date = trades[0]['entry_time']
+                end_date = trades[-1]['exit_time']
+                all_dates = pd.date_range(start=start_date, end=end_date, freq='D')
+            equity_curve = pd.Series(initial_capital, index=all_dates)
             current_equity = initial_capital
+            last_exit = all_dates[0]
             
             for trade in trades:
-                # 每笔交易完成后更新权益
-                profit_pct = trade['profit_pct']
-                current_equity *= (1 + profit_pct)
-                equity.append(current_equity)
-                equity_times.append(trade['exit_time'])
-            
-            return pd.Series(equity, index=equity_times)
-            
+                # 在entry到exit期间，权益不变
+                equity_curve.loc[last_exit:trade['exit_time']] = current_equity
+                # 交易完成后更新权益
+                current_equity *= (1 + trade['profit_pct'])
+                last_exit = trade['exit_time']
+            # 最后填充剩余日期
+            equity_curve.loc[last_exit:] = current_equity
+            return equity_curve
         except Exception as e:
             self.logger.error(f"计算权益曲线失败: {str(e)}")
+            if all_dates is not None:
+                return pd.Series([initial_capital]*len(all_dates), index=all_dates)
             return pd.Series([initial_capital])
     
     def _calculate_trade_statistics(self, trades):
@@ -1023,65 +1033,56 @@ class MLStrategyAgent:
     
     def _calculate_beta(self, equity_curve, benchmark_data):
         """
-        计算贝塔系数
-        
-        Args:
-            equity_curve (pd.Series): 策略权益曲线
-            benchmark_data (pd.DataFrame): 基准数据
-            
-        Returns:
-            float: 贝塔系数
+        计算贝塔系数，自动对齐日期
         """
         try:
-            # 确保数据对齐
-            strategy_returns = equity_curve.pct_change().dropna()
-            benchmark_returns = benchmark_data['close'].pct_change().dropna()
-            
-            # 对齐数据
-            common_index = strategy_returns.index.intersection(benchmark_returns.index)
-            strategy_returns = strategy_returns[common_index]
-            benchmark_returns = benchmark_returns[common_index]
-            
-            # 计算协方差和方差
+            # 只保留benchmark_data有的日期
+            common_index = equity_curve.index.intersection(benchmark_data.index)
+            if len(common_index) == 0:
+                self.logger.warning("equity_curve和benchmark_data没有共同日期，无法计算beta")
+                return None
+            strategy_returns = equity_curve.loc[common_index].pct_change().dropna()
+            benchmark_returns = benchmark_data.loc[common_index, 'close'].pct_change().dropna()
+            # 再次对齐
+            common_index2 = strategy_returns.index.intersection(benchmark_returns.index)
+            if len(common_index2) == 0:
+                self.logger.warning("对齐后无有效数据，无法计算beta")
+                return None
+            strategy_returns = strategy_returns.loc[common_index2]
+            benchmark_returns = benchmark_returns.loc[common_index2]
             covariance = strategy_returns.cov(benchmark_returns)
             benchmark_variance = benchmark_returns.var()
-            
-            # 计算贝塔系数
+            if benchmark_variance == 0:
+                return None
             beta = covariance / benchmark_variance
-            
             return beta
-            
         except Exception as e:
             self.logger.error(f"计算贝塔系数失败: {str(e)}")
-            return 0
-    
+            return None
+
     def _calculate_correlation(self, equity_curve, benchmark_data):
         """
-        计算相关性
-        Args:
-            equity_curve (pd.Series): 策略权益曲线
-            benchmark_data (pd.DataFrame): 基准数据         
-        Returns:
-            float: 相关系数
+        计算相关性，自动对齐日期
         """
         try:
-            # 确保数据对齐
-            strategy_returns = equity_curve.pct_change().dropna()
-            benchmark_returns = benchmark_data['close'].pct_change().dropna()
-            
-            # 对齐数据
-            common_index = strategy_returns.index.intersection(benchmark_returns.index)
-            strategy_returns = strategy_returns[common_index]
-            benchmark_returns = benchmark_returns[common_index]
-            
-            # 计算相关系数
+            common_index = equity_curve.index.intersection(benchmark_data.index)
+            if len(common_index) == 0:
+                self.logger.warning("equity_curve和benchmark_data没有共同日期，无法计算相关性")
+                return None
+            strategy_returns = equity_curve.loc[common_index].pct_change().dropna()
+            benchmark_returns = benchmark_data.loc[common_index, 'close'].pct_change().dropna()
+            # 再次对齐
+            common_index2 = strategy_returns.index.intersection(benchmark_returns.index)
+            if len(common_index2) == 0:
+                self.logger.warning("对齐后无有效数据，无法计算相关性")
+                return None
+            strategy_returns = strategy_returns.loc[common_index2]
+            benchmark_returns = benchmark_returns.loc[common_index2]
             correlation = strategy_returns.corr(benchmark_returns)
-            
             return correlation
-            
         except Exception as e:
             self.logger.error(f"计算相关性失败: {str(e)}")
-            return 0
+            return None
     
     def _generate_recommendations(self, backtest_results):
         """
@@ -1154,9 +1155,9 @@ class MLStrategyAgent:
             self.logger.error(f"计算市场强度时出错: {str(e)}")
             return 0.5  # 发生错误时返回中性值
 
-    def _map_expert_params(self, expert_params, current_atr=None, current_price=None):
+    def _map_expert_params(self, expert_params, current_atr=None, current_price=None, history_window=5):
         """
-        将专家参数映射为策略参数，采用温和映射，避免过拟合。
+        将专家参数映射为策略参数，采用更大扰动，并引入历史窗口平滑。
         """
         mapped = {}
         # 1. RSI阈值映射（温和处理，避免极端）
@@ -1179,7 +1180,67 @@ class MLStrategyAgent:
         # 5. 仓位
         if 'position_size' in expert_params:
             mapped['position_size'] = min(1.0, max(0.01, expert_params['position_size']))
+        # --- 新增：历史窗口平滑 ---
+        if hasattr(self, '_param_history_buffer'):
+            buffer = self._param_history_buffer
+        else:
+            buffer = []
+        buffer.append(mapped.copy())
+        if len(buffer) > history_window:
+            buffer.pop(0)
+        self._param_history_buffer = buffer
+        # 计算历史均值
+        if len(buffer) > 1:
+            for k in mapped:
+                try:
+                    mapped[k] = np.mean([b[k] for b in buffer if k in b])
+                except Exception:
+                    pass
+        # --- 增加更大扰动 ---
+        if 'rsi_long' in mapped:
+            mapped['rsi_long'] = min(55, max(40, mapped['rsi_long'] + np.random.normal(0, 2)))
+        if 'position_size' in mapped:
+            mapped['position_size'] = min(0.3, max(0.05, mapped['position_size'] + np.random.normal(0, 0.03)))
+        if 'stop_loss_pct' in mapped:
+            mapped['stop_loss_pct'] = min(0.05, max(0.005, mapped['stop_loss_pct'] + np.random.normal(0, 0.002)))
         return mapped
+
+    def _get_trade_params(self, current_price, advisor_position_size, advisor_stop_loss, advisor_take_profit, position_suggestions):
+        """
+        动态获取仓位、止损、止盈参数，优先用advisor建议，其次用position_suggestions，最后用默认参数。
+        自动类型转换，防止LLM返回字符串时报错。
+        """
+        # 仓位
+        if advisor_position_size is not None:
+            try:
+                position_size = float(advisor_position_size)
+            except Exception:
+                position_size = self.strategy_params.get('position_size', 0.1)
+        elif position_suggestions and 'position_size' in position_suggestions:
+            position_size = position_suggestions['position_size']
+        else:
+            position_size = self.strategy_params.get('position_size', 0.1)
+        # 止损
+        if advisor_stop_loss is not None:
+            try:
+                stop_loss_pct = abs(float(advisor_stop_loss) / current_price - 1)
+            except Exception:
+                stop_loss_pct = self.strategy_params.get('stop_loss_pct', 0.02)
+        elif position_suggestions and 'stop_loss' in position_suggestions:
+            stop_loss_pct = abs(position_suggestions['stop_loss'] / current_price - 1)
+        else:
+            stop_loss_pct = self.strategy_params.get('stop_loss_pct', 0.02)
+        # 止盈
+        if advisor_take_profit is not None:
+            try:
+                take_profit_pct = abs(float(advisor_take_profit) / current_price - 1)
+            except Exception:
+                take_profit_pct = self.strategy_params.get('take_profit_pct', 0.05)
+        elif position_suggestions and 'take_profit' in position_suggestions:
+            take_profit_pct = abs(position_suggestions['take_profit'] / current_price - 1)
+        else:
+            take_profit_pct = self.strategy_params.get('take_profit_pct', 0.05)
+        return position_size, stop_loss_pct, take_profit_pct
 
     def generate_signals(self, market_data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -1191,7 +1252,6 @@ class MLStrategyAgent:
         """
         try:
             self.logger.info(f"开始生成交易信号（支持多空），数据行数: {len(market_data)}")
-            # 只初始化signals和持仓等变量，不再获取agent建议
             signals = pd.DataFrame(index=market_data.index)
             signals['signal'] = 0
             position = 0
@@ -1201,23 +1261,25 @@ class MLStrategyAgent:
             daily_loss = 0.0
             current_day = None
             trading_paused = False
+            param_history = []
             for i in range(len(market_data)):
                 trading_paused = False
                 current_data = market_data.iloc[i]
-                current_price = float(current_data['close'])  # 确保转换为float类型
+                current_price = float(current_data['close'])
                 signal_value = 0
-                # 记录日期
                 if 'date' in current_data:
                     this_day = current_data['date']
                 else:
                     this_day = market_data.index[i]
-                # === 新增：计算市场强度 ===
                 market_strength = self._calculate_market_strength(market_data.iloc[:i+1])
-                self.logger.info(f"market_strength: {market_strength}, position: {position}")  # 打印市场强度
-                # === 每根K线都获取agent建议 ===
                 advice = self._get_agent_advice(market_data.iloc[:i+1])
-                # === 同步专家参数 ===
                 expert_params = advice.get('strategy_developer', {}).get('parameters', {})
+                mapped_params = None
+                if not expert_params:
+                    self.logger.warning("agent建议为空，本次不生成信号")
+                    signals.loc[signals.index[i], 'signal'] = 0
+                    param_history.append({'index': signals.index[i], 'expert_params_empty': True})
+                    continue
                 if expert_params:
                     if 'atr' in market_data.columns:
                         current_atr = market_data['atr'].iloc[i]
@@ -1226,7 +1288,11 @@ class MLStrategyAgent:
                     mapped_params = self._map_expert_params(expert_params, current_atr, current_price)
                     self.set_params(**mapped_params)
                     self.logger.info(f"已自动同步并映射专家参数: {mapped_params}")
-                # === 获取风险分析师和交易顾问建议 ===
+                param_history.append({
+                    'index': signals.index[i],
+                    **{f'expert_{k}': v for k, v in expert_params.items()},
+                    **{f'mapped_{k}': v for k, v in (mapped_params.items() if mapped_params else {})}
+                })
                 risk_advice = advice.get('risk_analyst', {})
                 trading_advice = advice.get('trading_advisor', {})
                 risk_mgmt = risk_advice.get('risk_management', {})
@@ -1239,7 +1305,6 @@ class MLStrategyAgent:
                 advisor_stop_loss = trading_advice.get('stop_loss', None)
                 advisor_take_profit = trading_advice.get('take_profit', None)
                 # === 计算市场指标 ===
-                # 注意：如果指标依赖于全量数据，仍然用 market_data，否则可用 market_data.iloc[:i+1]
                 market_indicators = self.data_processor.calculate_market_indicators(market_data)
                 # 2. 自身信号
                 strategy_signal = 0
@@ -1250,35 +1315,26 @@ class MLStrategyAgent:
                     elif market_strength < 0.4:
                         if self._check_short_entry_conditions(current_data, market_indicators, advice.get('strategy_developer', {})):
                             strategy_signal = -1
-                # 3. 信号融合（可恢复为多智能体融合）
+                # === 加权投票信号融合 ===
+                strategy_vote = strategy_signal
+                advisor_vote = 0
                 if current_signal_advisor == 'buy':
-                    advisor_signal = 1
+                    advisor_vote = 1
                 elif current_signal_advisor == 'sell':
-                    advisor_signal = -1
-                elif current_signal_advisor == 'hold':
-                    advisor_signal = 0
-                else:
-                    advisor_signal = 0
-                if advisor_signal == 0:
-                    signal_value = strategy_signal if abs(strategy_signal) == 1 else 0
-                elif advisor_signal == strategy_signal and advisor_signal != 0:
-                    signal_value = advisor_signal
-                elif advisor_signal != 0 and strategy_signal == 0:
-                    signal_value = advisor_signal if risk_level != 'high' else 0
+                    advisor_vote = -1
+                risk_weight = 1.0
+                if risk_level == 'high':
+                    risk_weight = 0.5
+                vote_score = 0.5 * strategy_vote + 0.4 * advisor_vote * risk_weight
+                if vote_score > 0.5:
+                    signal_value = 1
+                elif vote_score < -0.5:
+                    signal_value = -1
                 else:
                     signal_value = 0
-                # 4. 仓位/止损/止盈融合
-                position_size = self.strategy_params.get('position_size', 0.1)
-                if advisor_position_size:
-                    position_size = advisor_position_size
-                elif risk_level == 'high':
-                    position_size = min(position_size, 0.05)
-                stop_loss_pct = self.strategy_params.get('stop_loss_pct', 0.02)
-                take_profit_pct = self.strategy_params.get('take_profit_pct', 0.05)
-                if advisor_stop_loss and advisor_stop_loss > 0:
-                    stop_loss_pct = abs(advisor_stop_loss / current_price - 1)
-                if advisor_take_profit and advisor_take_profit > 0:
-                    take_profit_pct = abs(advisor_take_profit / current_price - 1)
+                # === 获取本轮交易参数 ===
+                position_size, stop_loss_pct, take_profit_pct = self._get_trade_params(
+                    current_price, advisor_position_size, advisor_stop_loss, advisor_take_profit, position_suggestions)
                 # 5. 全局风控
                 if signal_value == 0 and entry_price is not None:
                     profit_pct = float((current_price - entry_price) / entry_price if position == 1 else (entry_price - current_price) / entry_price)
@@ -1327,11 +1383,14 @@ class MLStrategyAgent:
                         position = 0
                         entry_price = None
                 signals.loc[signals.index[i], 'signal'] = signal_value
-            # 统计信号
             long_signals = (signals['signal'] == 1).sum()
             short_signals = (signals['signal'] == -1).sum()
             close_signals = (signals['signal'] == 0).sum()
             self.logger.info(f"信号统计 - 做多: {long_signals}, 做空: {short_signals}, 平仓: {close_signals}")
+            if param_history:
+                param_df = pd.DataFrame(param_history)
+                param_df.to_csv('agent_param_history.csv', index=False)
+                self.logger.info("已保存agent参数建议历史到 agent_param_history.csv")
             return signals
         except Exception as e:
             self.logger.error(f"生成交易信号时出错: {str(e)}")
