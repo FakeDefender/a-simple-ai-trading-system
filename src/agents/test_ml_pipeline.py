@@ -7,7 +7,7 @@ from src.utils.config_loader import load_config
 from src.utils.data_loader import DataLoader
 
 # 配置文件路径
-MARKET_DATA_PATH = 'data/market_data/processed/tsla.us_d_technical_indicators_20250611.csv'
+MARKET_DATA_PATH = 'data/market_data/processed/tsla.us_d_technical_indicators_20250614.csv'
 TRAIN_CSV = 'ml_training_data.csv'
 
 # 初始化agent（请根据你的实际参数补充）

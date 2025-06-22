@@ -8,77 +8,47 @@ from src.agents.ml_strategy_agent import MLStrategyAgent
 
 def generate_ml_training_data(market_data: pd.DataFrame, agent: MLStrategyAgent, output_csv: str = None):
     """
-    遍历market_data,按信号判断函数生成决策点和信号,在决策点获取agent建议,合成训练集。
-    如果output_csv已存在则直接读取并返回。
+    先用agent.generate_signals生成信号序列，然后遍历market_data采集特征，ml_signal直接用signals['signal']，保证训练数据标签与实盘一致。
+    只采集信号不为0的行。
     """
     if output_csv and os.path.exists(output_csv):
         print(f"{output_csv} 已存在，直接读取。")
         return pd.read_csv(output_csv)
     features = []
-    position = 0
-    entry_price = None
+    signals = agent.generate_signals(market_data)
     for i in range(len(market_data)):
-        if i % 3 == 0:
-            print(f"正在处理第{i}行，共{len(market_data)}行")
+        signal = signals.iloc[i]['signal'] if 'signal' in signals.columns else signals.iloc[i]
+        if signal == 0:
+            continue  # 只采集信号不为0的行
         current_data = market_data.iloc[i]
-        current_price = float(current_data['close'])
-        # 1. 开仓点
-        is_long_entry = False
-        is_short_entry = False
-        is_long_exit = False
-        is_short_exit = False
-        market_indicators = market_data
-        if position == 0:
-            if agent._check_long_entry_conditions(current_data, market_indicators, {}):
-                is_long_entry = True
-            elif agent._check_short_entry_conditions(current_data, market_indicators, {}):
-                is_short_entry = True
-        elif position == 1:
-            if agent._check_long_exit_conditions(current_data, market_indicators, {}):
-                is_long_exit = True
-        elif position == -1:
-            if agent._check_short_exit_conditions(current_data, market_indicators, {}):
-                is_short_exit = True
-        # 只在决策点采集样本
-        if is_long_entry or is_short_entry or is_long_exit or is_short_exit:
-            # 获取agent建议
-            advice = agent._get_agent_advice(market_data.iloc[:i+1])
-            # 合成特征
-            row = dict(current_data)
-            # strategy_developer参数
-            sd_params = advice.get('strategy_developer', {}).get('parameters', {})
-            for k, v in sd_params.items():
-                row[f'sd_param_{k}'] = v
-            # risk_analyst
-            risk_level = advice.get('risk_analyst', {}).get('risk_level', None)
-            row['risk_level'] = risk_level
-            # trading_advisor
-            ta_signal = advice.get('trading_advisor', {}).get('current_signal', None)
-            row['ta_signal'] = ta_signal
-            # 目标变量
-            if is_long_entry:
-                signal = 1
-                position = 1
-                entry_price = current_price
-            elif is_short_entry:
-                signal = -1
-                position = -1
-                entry_price = current_price
-            elif is_long_exit or is_short_exit:
-                signal = 0
-                position = 0
-                entry_price = None
-            row['ml_signal'] = signal
-            # 下根K线收益率
-            if i < len(market_data) - 1:
-                next_close = market_data.iloc[i+1]['close']
-                row['next_return'] = (next_close - current_price) / current_price
-            else:
-                row['next_return'] = np.nan
-            features.append(row)
+        row = dict(current_data)
+        # 可选：采集更多特征，如历史窗口、技术指标等
+        # 采集agent建议参数
+        advice = agent._get_agent_advice(market_data.iloc[:i+1])
+        sd_params = advice.get('strategy_developer', {}).get('parameters', {})
+        for k, v in sd_params.items():
+            row[f'sd_param_{k}'] = v
+        risk_level = advice.get('risk_analyst', {}).get('risk_level', None)
+        row['risk_level'] = risk_level
+        ta_signal = advice.get('trading_advisor', {}).get('current_signal', None)
+        row['ta_signal'] = ta_signal
+        row['ml_signal'] = signal
+        # 下根K线收益率
+        if i < len(market_data) - 1:
+            next_close = market_data.iloc[i+1]['close']
+            row['next_return'] = (next_close - current_data['close']) / current_data['close']
+        else:
+            row['next_return'] = np.nan
+        features.append(row)
     df = pd.DataFrame(features)
     if output_csv:
         df.to_csv(output_csv, index=False)
+    # 特征相关性分析
+    if len(df) > 1:
+        corr = df.corr(numeric_only=True)
+        print('特征相关性矩阵:')
+        print(corr)
+        corr.to_csv('feature_correlation.csv')
     return df
 
 # 用法示例：
