@@ -155,4 +155,7 @@ tmp/
 *.zip
 *.tar.gz
 *.rar
-*.7z 
+*.7z
+
+# Local installer binaries
+autocodex-*.exe

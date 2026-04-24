@@ -1,367 +1,484 @@
-from typing import Dict, List, Optional, Union
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
 import logging
 import os
-import yfinance as yf
-import ccxt
-import requests
-import json
-from .data_storage import DataStorage
+from io import StringIO
+from typing import Dict, Optional
+from urllib.parse import quote
+from urllib.request import urlopen
+
+import pandas as pd
+
 from .data_processor import DataProcessor
-import akshare as ak
-import tushare as ts
+from .data_storage import DataStorage
+
 
 logger = logging.getLogger(__name__)
 
+
 class DataLoader:
     def __init__(self, config: Dict):
-        """
-        初始化数据加载器
-        
-        Args:
-            config: 配置字典，包含数据加载参数
-        """
-        self.config = config
+        self.config = config or {}
         self.logger = logging.getLogger(__name__)
-        self.data_storage = DataStorage(config)
+        self.data_storage = DataStorage(self.config)
         self.data_processor = DataProcessor()
-        
-    def load_data(self, symbol: str, interval: str, force_update: bool = True) -> pd.DataFrame:
-        """加载市场数据"""
-        try:
-            self.logger.info(f"开始加载数据 - 交易品种: {symbol}, 时间间隔: {interval}, 强制更新: {force_update}")
-            
-            # 尝试从本地加载已处理数据
-            processed_data = self.data_storage.load_processed_data(
-                symbol, 
-                interval, 
-                process_type='technical_indicators'
-            )
-            if processed_data is not None and not force_update:
-                self.logger.info(f"从本地加载已处理数据成功: {symbol} {interval}")
-                self.logger.info(f"本地已处理数据列: {processed_data.columns}")
-                self.logger.info(f"本地已处理数据形状: {processed_data.shape}")
-                return processed_data
-            
-            # 如果没有本地数据或需要强制更新，则从API获取数据
-            raw_data = self._fetch_market_data(symbol, interval)
-            if raw_data is None:
-                self.logger.error("获取市场数据失败")
-                return None
-                
-            # 计算技术指标
-            processed_data = self.data_processor.calculate_technical_indicators(raw_data)
-            
-            # 保存处理后的数据
-            self.data_storage.save_processed_data(
-                processed_data, 
-                symbol, 
-                interval, 
-                process_type='technical_indicators'
-            )
-            
-            return processed_data
-            
-        except Exception as e:
-            self.logger.error(f"加载数据时出错: {str(e)}")
+
+    def load_data(
+        self,
+        symbol: Optional[str] = None,
+        interval: Optional[str] = None,
+        force_update: Optional[bool] = None,
+    ) -> Optional[pd.DataFrame]:
+        data_config = self.config.get("data", {})
+        symbol = symbol or data_config.get("symbol", "aapl.us")
+        interval = interval or data_config.get("interval", "d")
+        force_update = data_config.get("force_update", False) if force_update is None else force_update
+        source = data_config.get("source", "api")
+
+        self.logger.info(
+            f"开始加载数据 - source={source}, symbol={symbol}, interval={interval}, force_update={force_update}"
+        )
+
+        if source == "csv":
+            data = self._load_from_csv(symbol=symbol)
+            return self.data_processor.calculate_technical_indicators(data)
+
+        if not force_update:
+            cached = self.data_storage.load_processed_data(symbol, interval, "technical_indicators")
+            if cached is not None and not cached.empty:
+                self.logger.info(f"命中本地缓存: {symbol} {interval}")
+                return cached
+
+        raw_data = self._fetch_market_data(symbol, interval)
+        if raw_data is None or raw_data.empty:
+            self.logger.error("获取市场数据失败")
             return None
-        
+
+        self.data_storage.save_raw_data(raw_data, symbol, interval)
+        processed = self.data_processor.calculate_technical_indicators(raw_data)
+        self.data_storage.save_processed_data(processed, symbol, interval, "technical_indicators")
+        return processed
+
     def _fetch_market_data(self, symbol: str, interval: str) -> Optional[pd.DataFrame]:
-        """从API获取市场数据"""
-        try:
-            self.logger.info(f"从API获取数据: {symbol} {interval}")
-            return self._fetch_from_api(symbol, interval)
-        except Exception as e:
-            self.logger.error(f"从API获取数据时出错: {str(e)}")
+        data_config = self.config.get("data", {})
+        source = data_config.get("source", "api")
+        if source != "api":
+            raise ValueError(f"暂不支持的数据源类型: {source}")
+
+        normalized_interval = str(interval or "d").lower()
+        timeframe = self._resolve_remote_timeframe(normalized_interval)
+        if normalized_interval in {"d", "w", "m"} and self._stooq_api_key():
+            stooq_data = self._fetch_from_stooq(symbol, normalized_interval)
+            if stooq_data is not None and not stooq_data.empty:
+                return stooq_data
+            self.logger.warning("Stooq 数据不可用，改用 Yahoo Chart - symbol=%s, interval=%s", symbol, normalized_interval)
+
+        yahoo_data = self._fetch_from_yahoo_chart(symbol, timeframe)
+        if yahoo_data is not None and not yahoo_data.empty:
+            return yahoo_data
+
+        self.logger.warning("Yahoo Chart 数据不可用，改用 yfinance - symbol=%s, interval=%s", symbol, normalized_interval)
+        return self._fetch_from_yfinance(symbol, timeframe)
+
+    def _log_fetch_issue(self, optional: bool, message: str, *args):
+        log = self.logger.info if optional else self.logger.error
+        log(message, *args)
+
+    def _resolve_remote_timeframe(self, interval: str) -> str:
+        normalized_interval = str(interval or "").lower()
+        mapping = {
+            "d": "1d",
+            "w": "1wk",
+            "m": "1mo",
+        }
+        if normalized_interval in mapping:
+            return mapping[normalized_interval]
+        return str(self.config.get("data", {}).get("timeframe", "1d"))
+
+    def _stooq_api_key(self) -> str:
+        return str(self.config.get("data", {}).get("stooq_api_key", "")).strip()
+
+    def _format_stooq_date(self, value: Optional[str]) -> str:
+        parsed = pd.to_datetime(value, errors="coerce")
+        if pd.isna(parsed):
+            return ""
+        return parsed.strftime("%Y%m%d")
+
+    def _to_unix_timestamp(self, value: Optional[str], default_offset_days: int) -> int:
+        parsed = pd.to_datetime(value, errors="coerce")
+        if pd.isna(parsed):
+            timestamp = pd.Timestamp.utcnow().normalize() + pd.Timedelta(days=default_offset_days)
+        else:
+            timestamp = pd.Timestamp(parsed)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize("UTC")
+        else:
+            timestamp = timestamp.tz_convert("UTC")
+        return int(timestamp.timestamp())
+
+    def _fetch_from_stooq(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> Optional[pd.DataFrame]:
+        api_key = self._stooq_api_key()
+        if not api_key:
+            self.logger.info("未配置 Stooq apikey，跳过 Stooq 数据源 - symbol=%s", symbol)
             return None
-        
-    def _fetch_from_api(self, symbol: str, interval: str) -> pd.DataFrame:
-        """
-        从Stooq API获取数据
-        
-        Args:
-            symbol (str): 交易品种代码，例如 'aapl.us'
-            interval (str): 时间间隔，支持 'd'（日线）, 'w'（周线）, 'm'（月线）
-            
-        Returns:
-            pd.DataFrame: 获取的原始OHLCV数据
-        """
+
+        data_config = self.config.get("data", {})
+        start_token = self._format_stooq_date(start_date or data_config.get("start_date"))
+        end_token = self._format_stooq_date(end_date or data_config.get("end_date"))
+        url = (
+            "https://stooq.com/q/d/l/"
+            f"?s={symbol}&d1={start_token}&d2={end_token}&i={interval}&apikey={api_key}"
+        )
+
         try:
-            # 构建Stooq数据URL
-            # 使用配置文件中的时间范围
-            start_date = pd.to_datetime(self.config['data']['start_date'])
-            end_date = pd.to_datetime(self.config['data']['end_date'])
-            url = f"https://stooq.com/q/d/l/?s={symbol}&d1={start_date.strftime('%Y%m%d')}&d2={end_date.strftime('%Y%m%d')}&i={interval}"
-            # 使用pandas直接读取CSV数据
-            df = pd.read_csv(url)
-            logger.info(f"原始数据列名: {df.columns}")
-            # 重命名列以匹配标准格式
-            df.columns = ['date', 'open', 'high', 'low', 'close', 'volume']
-            logger.info(f"重命名后的列名: {df.columns}")
-            # 转换日期列
-            df['date'] = pd.to_datetime(df['date'])
-            # 确保数值列为float类型
-            numeric_columns = ['open', 'high', 'low', 'close', 'volume']
-            df[numeric_columns] = df[numeric_columns].astype(float)
-            df.set_index('date', inplace=True)
-            # 按日期排序
-            df.sort_index(inplace=True)
-            
-            logger.info(f"成功从Stooq获取原始数据: {symbol} {interval}")
-            return df
-            
-        except Exception as e:
-            logger.error(f"从Stooq获取数据失败: {str(e)}")
+            with urlopen(url, timeout=20) as response:
+                payload = response.read().decode("utf-8", errors="replace").strip()
+        except Exception as exc:
+            self.logger.error(f"从 Stooq 获取数据失败: {exc}")
             return None
-        
-    def _load_from_csv(self) -> pd.DataFrame:
-        """
-        从CSV文件加载数据
-        """
-        file_path = self.config['data']['path']
-        
+
+        if not payload:
+            self.logger.error("Stooq 返回空响应")
+            return None
+
+        first_line = payload.splitlines()[0].strip().lstrip("\ufeff")
+        if first_line.lower() != "date,open,high,low,close,volume":
+            self.logger.warning("Stooq 返回了非标准 CSV 内容，已跳过 - symbol=%s, first_line=%s", symbol, first_line[:120])
+            return None
+
+        try:
+            data = pd.read_csv(StringIO(payload))
+        except Exception as exc:
+            self.logger.error(f"解析 Stooq 数据失败: {exc}")
+            return None
+
+        if data.empty or len(data.columns) < 6:
+            self.logger.error("Stooq 返回空数据或字段不完整")
+            return None
+
+        data.columns = ["date", "open", "high", "low", "close", "volume"]
+        data["date"] = pd.to_datetime(data["date"], errors="coerce")
+        data = data.dropna(subset=["date"])
+        data[["open", "high", "low", "close", "volume"]] = data[
+            ["open", "high", "low", "close", "volume"]
+        ].astype(float)
+        data = data.set_index("date").sort_index()
+        return data
+
+    def _normalize_symbol_for_yfinance(self, symbol: str) -> str:
+        raw_symbol = str(symbol or "").strip()
+        normalized = raw_symbol.lower()
+        if normalized.endswith(".us"):
+            return raw_symbol[:-3].upper()
+        if normalized.endswith(".hk"):
+            return f"{raw_symbol[:-3].upper()}.HK"
+        if normalized.endswith(".sh"):
+            return f"{raw_symbol[:-3]}.SS"
+        if normalized.endswith(".sz"):
+            return f"{raw_symbol[:-3]}.SZ"
+        if normalized.endswith(".bj"):
+            return f"{raw_symbol[:-3]}.BJ"
+        if "/" in raw_symbol:
+            base, quote = raw_symbol.split("/", 1)
+            quote = "USD" if quote.lower() in {"usd", "usdt", "usdc"} else quote.upper()
+            return f"{base.upper()}-{quote}"
+        if raw_symbol.startswith("^"):
+            return raw_symbol.upper()
+        return raw_symbol
+
+    def _fetch_from_yahoo_chart(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        optional: bool = False,
+    ) -> Optional[pd.DataFrame]:
+        try:
+            import requests
+        except ImportError:
+            self._log_fetch_issue(optional, "未安装 requests，无法通过 Yahoo Chart 拉取数据")
+            return None
+
+        data_config = self.config.get("data", {})
+        ticker = self._normalize_symbol_for_yfinance(symbol)
+        period1 = self._to_unix_timestamp(start_date or data_config.get("start_date"), default_offset_days=-365)
+        period2 = self._to_unix_timestamp(end_date or data_config.get("end_date"), default_offset_days=1)
+        if period2 <= period1:
+            period2 = period1 + 86400
+
+        encoded_ticker = quote(ticker, safe="")
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Origin": "https://finance.yahoo.com",
+            "Referer": "https://finance.yahoo.com/",
+        }
+        params = {
+            "period1": period1,
+            "period2": period2,
+            "interval": timeframe,
+            "includeAdjustedClose": "true",
+            "events": "div,splits",
+        }
+
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=20)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            self._log_fetch_issue(optional, "Yahoo Chart 请求失败 - symbol=%s, ticker=%s, error=%s", symbol, ticker, exc)
+            return None
+
+        chart = payload.get("chart", {}) if isinstance(payload, dict) else {}
+        result = chart.get("result") or []
+        if not result:
+            error_payload = chart.get("error") or {}
+            error_text = error_payload.get("description") or error_payload.get("code") or "empty result"
+            self._log_fetch_issue(optional, "Yahoo Chart 未返回有效数据 - symbol=%s, ticker=%s, error=%s", symbol, ticker, error_text)
+            return None
+
+        item = result[0]
+        timestamps = item.get("timestamp") or []
+        indicators = item.get("indicators") or {}
+        quote_list = indicators.get("quote") or []
+        if not timestamps or not quote_list:
+            self._log_fetch_issue(optional, "Yahoo Chart 返回字段不完整 - symbol=%s, ticker=%s", symbol, ticker)
+            return None
+
+        quote_payload = quote_list[0]
+        index = pd.to_datetime(timestamps, unit="s", utc=True).tz_convert(None)
+        frame = pd.DataFrame(
+            {
+                "open": quote_payload.get("open", []),
+                "high": quote_payload.get("high", []),
+                "low": quote_payload.get("low", []),
+                "close": quote_payload.get("close", []),
+                "volume": quote_payload.get("volume", []),
+            },
+            index=index,
+        )
+        adjclose_list = (indicators.get("adjclose") or [{}])[0].get("adjclose") or []
+        if len(adjclose_list) == len(frame):
+            adjusted_close = pd.Series(adjclose_list, index=frame.index)
+            frame["close"] = pd.to_numeric(frame["close"], errors="coerce").fillna(adjusted_close)
+
+        for column in ["open", "high", "low", "close", "volume"]:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        frame = frame.dropna(subset=["open", "high", "low", "close"])
+        frame["volume"] = frame["volume"].fillna(0.0)
+        frame.index.name = "date"
+        if frame.empty:
+            self._log_fetch_issue(optional, "Yahoo Chart 解析后无有效行 - symbol=%s, ticker=%s", symbol, ticker)
+            return None
+        return frame.sort_index()
+
+    def _fetch_from_yfinance(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        optional: bool = False,
+    ) -> Optional[pd.DataFrame]:
+        try:
+            import yfinance as yf
+        except ImportError:
+            self._log_fetch_issue(optional, "未安装 yfinance，无法拉取该类标的")
+            return None
+
+        data_config = self.config.get("data", {})
+        start_date = start_date or data_config.get("start_date")
+        end_date = end_date or data_config.get("end_date")
+        ticker = self._normalize_symbol_for_yfinance(symbol)
+        self.logger.info("通过 yfinance 拉取数据 - symbol=%s, ticker=%s, timeframe=%s", symbol, ticker, timeframe)
+        data = yf.download(
+            ticker,
+            start=start_date,
+            end=end_date,
+            interval=timeframe,
+            progress=False,
+            auto_adjust=False,
+        )
+        if data.empty:
+            self._log_fetch_issue(optional, "yfinance 未返回有效数据 - symbol=%s, ticker=%s", symbol, ticker)
+            return None
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = [str(column[0]).lower() for column in data.columns]
+        else:
+            data.columns = [str(col).lower() for col in data.columns]
+        if "adj close" in data.columns and "close" not in data.columns:
+            data = data.rename(columns={"adj close": "close"})
+        required_columns = ["open", "high", "low", "close", "volume"]
+        missing_columns = [col for col in required_columns if col not in data.columns]
+        if missing_columns:
+            self._log_fetch_issue(optional, "yfinance 返回字段不完整: %s", missing_columns)
+            return None
+        return data[required_columns]
+
+    def _resolve_csv_path(self, symbol: Optional[str] = None) -> str:
+        data_config = self.config.get("data", {})
+        path_mapping = data_config.get("paths", {}) or {}
+        if symbol and symbol in path_mapping:
+            return path_mapping[symbol]
+        return data_config.get("path", "")
+
+    def _load_from_csv(self, symbol: Optional[str] = None) -> pd.DataFrame:
+        file_path = self._resolve_csv_path(symbol)
+        if not file_path:
+            raise ValueError("source=csv 时必须配置 data.path 或 data.paths[symbol]")
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"数据文件不存在: {file_path}")
-            
-        # 读取CSV文件
-        df = pd.read_csv(file_path)
-        
-        # 转换日期列
-        date_col = 'datetime' if 'datetime' in df.columns else 'date'
-        if date_col in df.columns:
-            df[date_col] = pd.to_datetime(df[date_col])
-            df.set_index(date_col, inplace=True)
-        
-        # 过滤时间范围
-        start_date = pd.to_datetime(self.config['data']['start_date'])
-        end_date = pd.to_datetime(self.config['data']['end_date'])
-        df = df[(df.index >= start_date) & (df.index <= end_date)]
-        
-        # 预处理数据
-        df = self.preprocess_data(df)
-        
-        return df
-        
-    def _load_from_database(self) -> pd.DataFrame:
-        """
-        从数据库加载数据
-        """
-        # TODO: 实现数据库连接和数据加载
-        raise NotImplementedError("数据库加载功能尚未实现")
-        
-            
-    def _load_crypto_data(self, symbols: List[str], timeframe: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """
-        加载加密货币数据
-        """
-        # 初始化交易所
-        exchange = ccxt.binance({
-            'enableRateLimit': True
-        })
-        
-        # 转换时间周期
-        timeframe_map = {
-            '1m': '1m',
-            '5m': '5m',
-            '15m': '15m',
-            '1h': '1h',
-            '4h': '4h',
-            '1d': '1d'
-        }
-        
-        # 加载数据
-        dfs = []
-        for symbol in symbols:
-            try:
-                # 获取OHLCV数据
-                ohlcv = exchange.fetch_ohlcv(
-                    symbol,
-                    timeframe_map[timeframe],
-                    exchange.parse8601(start_date),
-                    exchange.parse8601(end_date)
-                )
-                
-                # 转换为DataFrame
-                df = pd.DataFrame(
-                    ohlcv,
-                    columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
-                )
-                
-                # 转换时间戳
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                df.set_index('timestamp', inplace=True)
-                
-                # 添加交易品种列
-                df['symbol'] = symbol
-                
-                dfs.append(df)
-                
-            except Exception as e:
-                logger.error(f"加载{symbol}数据错误: {str(e)}")
-                continue
-                
-        # 合并数据
-        if not dfs:
-            raise ValueError("没有成功加载任何数据")
-            
-        return pd.concat(dfs)
-        
-    def _load_stock_data(self, symbols: List[str], timeframe: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """
-        加载股票数据
-        """
-        # 转换时间周期
-        interval_map = {
-            '1m': '1m',
-            '5m': '5m',
-            '15m': '15m',
-            '1h': '1h',
-            '4h': '4h',
-            '1d': '1d'
-        }
-        
-        # 加载数据
-        dfs = []
-        for symbol in symbols:
-            try:
-                # 获取股票数据
-                stock = yf.Ticker(symbol)
-                df = stock.history(
-                    start=start_date,
-                    end=end_date,
-                    interval=interval_map[timeframe]
-                )
-                
-                # 添加交易品种列
-                df['symbol'] = symbol
-                
-                dfs.append(df)
-                
-            except Exception as e:
-                logger.error(f"加载{symbol}数据错误: {str(e)}")
-                continue
-                
-        # 合并数据
-        if not dfs:
-            raise ValueError("没有成功加载任何数据")
-            
-        return pd.concat(dfs)
-        
-    def save_data(self, data: pd.DataFrame, file_path: str):
-        """
-        保存数据到CSV文件
-        """
-        try:
-            # 创建目录
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            
-            # 保存数据
-            data.to_csv(file_path)
-            
-            logger.info(f"数据已保存到: {file_path}")
-            
-        except Exception as e:
-            logger.error(f"保存数据错误: {str(e)}")
-            raise
-            
+
+        data = pd.read_csv(file_path)
+        data.columns = [str(col).lower() for col in data.columns]
+        date_col = "datetime" if "datetime" in data.columns else "date"
+        if date_col not in data.columns:
+            raise ValueError("CSV 中缺少 date 或 datetime 列")
+
+        data[date_col] = pd.to_datetime(data[date_col], errors="coerce")
+        data = data.dropna(subset=[date_col]).set_index(date_col).sort_index()
+
+        start_date = self.config.get("data", {}).get("start_date")
+        end_date = self.config.get("data", {}).get("end_date")
+        if start_date:
+            data = data[data.index >= pd.to_datetime(start_date)]
+        if end_date:
+            data = data[data.index <= pd.to_datetime(end_date)]
+
+        return self.preprocess_data(data)
+
     def preprocess_data(self, data: pd.DataFrame) -> pd.DataFrame:
-        """
-        数据预处理
-        """
         df = data.copy()
-        
-        # 处理缺失值
         df = self._handle_missing_values(df)
-        
-        # 处理异常值
         df = self._handle_outliers(df)
-        
-        # 计算技术指标
-        df = self.data_processor.calculate_technical_indicators(df)
-        
         return df
-        
+
     def _handle_missing_values(self, data: pd.DataFrame) -> pd.DataFrame:
-        """
-        处理缺失值
-        """
-        df = data.copy()
-        
-        # 前向填充
-        df.ffill(inplace=True)
-        
-        # 后向填充
-        df.bfill(inplace=True)
-        
-        return df
-        
+        return data.ffill().bfill()
+
     def _handle_outliers(self, data: pd.DataFrame) -> pd.DataFrame:
-        """
-        处理异常值
-        """
+        if len(data) < 20:
+            return data
+
         df = data.copy()
-        
-        # 计算价格变化率
-        df['returns'] = df['close'].pct_change()
-        
-        # 计算移动平均和标准差
-        df['ma'] = df['close'].rolling(window=20).mean()
-        df['std'] = df['close'].rolling(window=20).std()
-        
-        # 定义异常值阈值
-        threshold = 3
-        
-        # 替换异常值
-        df.loc[abs(df['returns']) > threshold * df['std'], 'close'] = df['ma']
-        
-        # 删除临时列
-        df.drop(['returns', 'ma', 'std'], axis=1, inplace=True)
-        
+        returns = df["close"].pct_change()
+        rolling_std = returns.rolling(window=20).std()
+        rolling_median = df["close"].rolling(window=20).median()
+        outlier_mask = returns.abs() > rolling_std * 6
+        df.loc[outlier_mask, "close"] = rolling_median.loc[outlier_mask]
         return df
-        
-    def get_benchmark_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
-        """
-        获取基准指数数据（使用纳斯达克100指数）
-        
-        Args:
-            start_date: 开始日期，格式：YYYY-MM-DD
-            end_date: 结束日期，格式：YYYY-MM-DD
-            
-        Returns:
-            pd.DataFrame: 基准指数数据，包含OHLCV数据
-        """
-        try:
-            # 如果没有指定日期范围，使用配置文件中的日期范围
-            if start_date is None:
-                start_date = self.config.get('data', {}).get('start_date')
-            if end_date is None:
-                end_date = self.config.get('data', {}).get('end_date')
-                
-            # 构建Stooq数据URL
-            url = f"https://stooq.com/q/d/l/?s=^ndx&d1={start_date.replace('-', '')}&d2={end_date.replace('-', '')}&i=d"
-            
-            # 使用pandas直接读取CSV数据，尝试指定编码
-            try:
-                benchmark = pd.read_csv(url, encoding='utf-8')
-            except UnicodeDecodeError:
-                benchmark = pd.read_csv(url, encoding='ISO-8859-1')
-            
-            # 重命名列以匹配标准格式
-            benchmark.columns = ['date', 'open', 'high', 'low', 'close', 'volume']
-            
-            # 处理缺失值，删除含有缺失值的行
-            benchmark.dropna(inplace=True)
-            
-            # 修正日期列乱码和格式
-            benchmark['date'] = pd.to_datetime(benchmark['date'], errors='coerce')
-            benchmark = benchmark[benchmark['date'].notnull()]
-            benchmark.set_index('date', inplace=True)
-            
-            return benchmark
-            
-        except Exception as e:
-            self.logger.error(f"获取基准数据失败: {str(e)}")
-            # 如果获取失败，返回一个空的DataFrame
-            return pd.DataFrame() 
+
+    def save_data(self, data: pd.DataFrame, file_path: str):
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        data.to_csv(file_path, encoding="utf-8")
+        self.logger.info(f"数据已保存到: {file_path}")
+
+    def _build_target_benchmark(
+        self,
+        reference_data: Optional[pd.DataFrame] = None,
+        reference_symbol: Optional[str] = None,
+    ) -> pd.DataFrame:
+        data_config = self.config.get("data", {})
+        symbol = reference_symbol or data_config.get("symbol", "target")
+        benchmark = reference_data.copy() if reference_data is not None else pd.DataFrame()
+
+        if benchmark.empty:
+            interval = data_config.get("interval", "d")
+            cached = self.data_storage.load_latest_data(symbol, interval, "raw")
+            if cached is None or cached.empty:
+                cached = self.data_storage.load_processed_data(symbol, interval, "technical_indicators")
+            benchmark = cached.copy() if cached is not None else pd.DataFrame()
+
+        if benchmark.empty or "close" not in benchmark.columns:
+            self.logger.warning("无法构造标的买入持有基准 - symbol=%s", symbol)
+            return pd.DataFrame()
+
+        benchmark = benchmark.sort_index().copy()
+        for column in ["open", "high", "low"]:
+            if column not in benchmark.columns:
+                benchmark[column] = benchmark["close"]
+        if "volume" not in benchmark.columns:
+            benchmark["volume"] = 0.0
+
+        benchmark = benchmark[["open", "high", "low", "close", "volume"]].dropna(subset=["close"])
+        self.logger.info("使用标的买入持有作为基准: %s", symbol)
+        return benchmark
+
+    def get_benchmark_data(
+        self,
+        start_date: str = None,
+        end_date: str = None,
+        reference_data: Optional[pd.DataFrame] = None,
+        reference_symbol: Optional[str] = None,
+    ) -> pd.DataFrame:
+        backtest_config = self.config.get("backtest", {})
+        if not backtest_config.get("benchmark_enabled", True):
+            self.logger.info("基准对比已关闭")
+            return pd.DataFrame()
+
+        benchmark_source = str(backtest_config.get("benchmark_source", "market")).lower()
+        if benchmark_source in {"target", "target_buy_hold", "buy_hold", "self"}:
+            return self._build_target_benchmark(reference_data, reference_symbol)
+
+        benchmark_symbol = backtest_config.get("benchmark_symbol", "^ndx")
+        if not benchmark_symbol:
+            self.logger.info("未配置 benchmark_symbol，跳过基准对比")
+            return self._build_target_benchmark(reference_data, reference_symbol)
+
+        cache_interval = "d_benchmark"
+        force_update = bool(self.config.get("data", {}).get("force_update", False))
+        if not force_update:
+            cached = self.data_storage.load_latest_data(benchmark_symbol, cache_interval, "raw")
+            if cached is not None and not cached.empty:
+                self.logger.info("命中本地基准缓存: %s", benchmark_symbol)
+                return cached
+
+        def persist(benchmark: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+            if benchmark is not None and not benchmark.empty:
+                self.data_storage.save_raw_data(benchmark, benchmark_symbol, cache_interval)
+                return benchmark
+            return None
+
+        if self._stooq_api_key():
+            benchmark = self._fetch_from_stooq(benchmark_symbol, "d", start_date=start_date, end_date=end_date)
+            cached_benchmark = persist(benchmark)
+            if cached_benchmark is not None:
+                return cached_benchmark
+
+        timeframe = self._resolve_remote_timeframe("d")
+        benchmark = self._fetch_from_yahoo_chart(
+            benchmark_symbol,
+            timeframe,
+            start_date=start_date,
+            end_date=end_date,
+            optional=True,
+        )
+        cached_benchmark = persist(benchmark)
+        if cached_benchmark is not None:
+            return cached_benchmark
+
+        if backtest_config.get("benchmark_yfinance_fallback", False):
+            fallback = self._fetch_from_yfinance(
+                benchmark_symbol,
+                timeframe,
+                start_date=start_date,
+                end_date=end_date,
+                optional=True,
+            )
+            cached_benchmark = persist(fallback)
+            if cached_benchmark is not None:
+                return cached_benchmark
+
+        if backtest_config.get("benchmark_fallback_to_target", True):
+            self.logger.info("外部基准不可用，改用标的买入持有基准 - benchmark=%s", benchmark_symbol)
+            return self._build_target_benchmark(reference_data, reference_symbol)
+
+        self.logger.warning("基准数据不可用，已跳过基准对比 - symbol=%s", benchmark_symbol)
+        return pd.DataFrame()

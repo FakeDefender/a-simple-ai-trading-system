@@ -1,272 +1,429 @@
-import unittest
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-import os
 import sys
+import tempfile
+import unittest
+import warnings
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
-# 添加项目根目录到系统路径
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    import numpy as np
+    import pandas as pd
+except ImportError:  # pragma: no cover
+    np = None
+    pd = None
 
-from src.utils.data_loader import DataLoader
-from src.models.trading_strategies import StrategyFactory
-from src.models.trade_executor import TradeExecutor
-from src.models.backtest_engine import BacktestEngine
-from src.utils.risk_calculator import RiskCalculator
 
+@unittest.skipUnless(pd is not None and np is not None, "需要安装 pandas 和 numpy 才能运行集成测试")
 class TestTradingSystem(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        """测试类初始化"""
-        # 创建测试目录
-        os.makedirs('data', exist_ok=True)
-        
-        # 生成测试数据
-        dates = pd.date_range(start='2023-01-01', end='2023-12-31', freq='D')
-        np.random.seed(42)  # 设置随机种子以确保可重复性
-        
-        # 生成基础价格序列（使用随机游走模型，增加波动率和趋势）
-        base_price = 100
-        # 增大波动率，加入正向微弱趋势
-        returns = np.random.normal(0.0005, 0.02, len(dates))
-        prices = base_price * (1 + returns).cumprod()
-        
-        # 生成OHLC数据
-        data = pd.DataFrame({
-            'datetime': dates,
-            'open': prices * (1 + np.random.normal(0, 0.002, len(dates))),
-            'high': prices * (1 + np.abs(np.random.normal(0, 0.004, len(dates)))),
-            'low': prices * (1 - np.abs(np.random.normal(0, 0.004, len(dates)))),
-            'close': prices,
-            'volume': np.random.lognormal(10, 1, len(dates))
-        })
-        
-        # 确保high是最高价，low是最低价
-        data['high'] = data[['open', 'high', 'close']].max(axis=1)
-        data['low'] = data[['open', 'low', 'close']].min(axis=1)
-        
-        # 保存测试数据
-        data.to_csv('data/test_data.csv', index=False)
-        
-        # 创建配置
-        cls.config = {
-            'data': {
-                'source': 'csv',
-                'path': 'data/test_data.csv',
-                'start_date': '2023-01-01',
-                'end_date': '2023-12-31'
-            },
-            'trading': {
-                'initial_capital': 100000,
-                'commission_rate': 0.001,
-                'max_position_size': 0.1,
-                'stop_loss': 0.02,
-                'take_profit': 0.05
-            },
-            'strategy': {
-                'type': 'hybrid',
-                'base_position_size': 1.0,
-                'max_position_size': 10.0,
-                'parameters': {
-                    'trend_weight': 0.6,
-                    'mean_reversion_weight': 0.4,
-                    'sma_short': 20,
-                    'sma_long': 50,
-                    'rsi_period': 14,
-                    'rsi_overbought': 70,
-                    'rsi_oversold': 30,
-                    'bb_period': 20,
-                    'bb_std': 2
-                }
-            },
-            'risk': {
-                'max_drawdown': 0.2,
-                'max_leverage': 3,
-                'position_limit': 0.5
+    def _build_sample_csv(self, directory: str) -> str:
+        dates = pd.date_range("2024-01-01", periods=180, freq="D")
+        base = np.linspace(100, 140, len(dates))
+        wave = np.sin(np.linspace(0, 12, len(dates))) * 4
+        close = base + wave
+        data = pd.DataFrame(
+            {
+                "date": dates,
+                "open": close * 0.995,
+                "high": close * 1.01,
+                "low": close * 0.99,
+                "close": close,
+                "volume": np.linspace(1000, 5000, len(dates)),
             }
-        }
-        
-        # 初始化组件
-        cls.data_loader = DataLoader(cls.config)
-        cls.risk_calculator = RiskCalculator(cls.config)
-        
-    def setUp(self):
-        """每个测试用例前的准备工作"""
-        self.data_loader = DataLoader(self.config)
-        self.risk_calculator = RiskCalculator()
-        
-    def test_data_loader(self):
-        """测试数据加载器"""
-        # 加载数据
-        data = self.data_loader.load_data()
-        
-        # 验证数据
-        self.assertIsInstance(data, pd.DataFrame)
-        self.assertFalse(data.empty)
-        self.assertIn('close', data.columns)
-        self.assertIn('volume', data.columns)
-        
-    def test_trading_strategies(self):
-        """测试交易策略"""
-        # 创建策略
-        strategy = StrategyFactory.create_strategy('hybrid', self.config)
-        
-        # 加载数据
-        data = self.data_loader.load_data()
-        
-        # 生成信号
-        signals = strategy.generate_signals(data)
-        
-        # 验证信号
-        self.assertIsInstance(signals, pd.DataFrame)
-        self.assertFalse(signals.empty)
-        self.assertIn('signal', signals.columns)
-        
-    def test_intraday_swing_strategy(self):
-        """
-        测试日内回转策略 (IntradaySwingStrategy)
-        """
-        # 准备日内回转策略的配置
-        intraday_config = {
-            'data': self.config['data'], # 使用与主配置相同的数据配置
-            'trading': self.config['trading'], # 使用与主配置相同的交易配置
-            'strategy': {
-                'type': 'intraday_swing',
-                'base_position_size': 1.0,
-                'max_position_size': 10.0,
-                'rsi_period': 14,
-                'rsi_oversold_threshold': 30,
-                'rsi_overbought_threshold': 70,
-                # 可以添加其他日内回转策略可能需要的参数
+        )
+        path = Path(directory) / "sample_prices.csv"
+        data.to_csv(path, index=False, encoding="utf-8")
+        return str(path)
+
+    def _build_api_config(self, directory: str, symbol: str = "aapl.us", interval: str = "d") -> dict:
+        return {
+            "data": {
+                "source": "api",
+                "symbol": symbol,
+                "interval": interval,
+                "start_date": "2024-01-01",
+                "end_date": "2024-12-31",
+                "storage": {
+                    "base_dir": str(Path(directory) / "market_data"),
+                    "raw_data_dir": "raw",
+                    "processed_data_dir": "processed",
+                },
             },
-            'risk': self.config['risk'] # 使用与主配置相同的风险配置
+            "strategy": {"fast_ma": 10, "slow_ma": 20},
+            "risk": {"stop_loss_pct": 0.03, "take_profit_pct": 0.06, "position_size": 1.0},
+            "backtest": {"initial_capital": 100000.0, "benchmark_symbol": "^ndx"},
+            "llm": {"enabled": False},
         }
 
-        # 创建日内回转策略实例
-        strategy = StrategyFactory.create_strategy('intraday_swing', intraday_config)
+    def test_csv_data_loader(self):
+        from src.utils.data_loader import DataLoader
 
-        # 加载数据
-        # 对于单元测试，理想情况下应该使用更小的、精心构造的数据集
-        # 但为了快速集成和利用现有数据加载逻辑，这里使用 setUpClass 生成的测试数据
-        data = self.data_loader.load_data()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = self._build_sample_csv(tmpdir)
+            config = {
+                "data": {
+                    "source": "csv",
+                    "path": csv_path,
+                    "symbol": "sample.us",
+                    "interval": "d",
+                    "start_date": "2024-01-01",
+                    "end_date": "2024-12-31",
+                    "storage": {
+                        "base_dir": str(Path(tmpdir) / "market_data"),
+                        "raw_data_dir": "raw",
+                        "processed_data_dir": "processed",
+                    },
+                },
+                "strategy": {"fast_ma": 10, "slow_ma": 20},
+                "risk": {"stop_loss_pct": 0.03, "take_profit_pct": 0.06, "position_size": 1.0},
+                "backtest": {"initial_capital": 100000.0},
+                "llm": {"enabled": False},
+            }
+            loader = DataLoader(config)
+            market_data = loader.load_data()
 
-        # 生成信号
-        signals = strategy.generate_signals(data)
+            self.assertIsNotNone(market_data)
+            self.assertFalse(market_data.empty)
+            self.assertIn("ma20", market_data.columns)
+            self.assertIn("rsi", market_data.columns)
+            self.assertIn("atr", market_data.columns)
 
-        # 验证信号
-        self.assertIsInstance(signals, pd.DataFrame)
-        self.assertFalse(signals.empty)
-        self.assertIn('signal', signals.columns)
-        
-        # 可以添加更具体的断言，例如检查在某些RSI条件下是否生成了预期的信号
-        # 例如：在RSI低于30时，信号是否为1 (买入)
-        # self.assertTrue((signals.loc[data['rsi'] < 30, 'signal'] == 1).all())
-        # 在RSI高于70时，信号是否为-1 (卖出)
-        # self.assertTrue((signals.loc[data['rsi'] > 70, 'signal'] == -1).all())
-        # 在其他RSI范围内，信号是否为0
-        # self.assertTrue((signals.loc[(data['rsi'] >= 30) & (data['rsi'] <= 70), 'signal'] == 0).all())
-        # 注意：上面的断言是简化的，实际可能需要考虑穿越逻辑和数据边缘情况
+    def test_api_data_loader_falls_back_to_yahoo_chart_when_stooq_is_unavailable(self):
+        from src.utils.data_loader import DataLoader
 
-    def test_trade_executor(self):
-        """测试交易执行器"""
-        # 创建执行器
-        executor = TradeExecutor(self.config)
-        
-        # 创建测试订单
-        trade_advice = {
-            'symbol': 'BTC/USD',
-            'direction': 'buy',
-            'quantity': 1.0,
-            'price': 100.0
-        }
-        
-        # 加载市场数据
-        market_data = self.data_loader.load_data()
-        
-        # 执行交易
-        execution = executor.execute_trade(trade_advice, market_data)
-        
-        # 验证执行结果
-        self.assertIsInstance(execution, dict)
-        self.assertIn('status', execution)
-        self.assertIn('execution_details', execution)
-        self.assertEqual(execution['status'], 'success')
-        
-    def test_backtest_engine(self):
-        """测试回测引擎"""
-        # 创建回测引擎
-        backtest = BacktestEngine(self.config)
-        
-        # 加载数据
-        data = self.data_loader.load_data()
-        
-        # 运行回测
-        results = backtest.run(data, 'hybrid')
-        
-        # 验证回测结果
-        self.assertIsInstance(results, dict)
-        self.assertIn('equity_curve', results)
-        self.assertIn('trades', results)
-        self.assertIn('metrics', results)
-        
-    def test_risk_calculator(self):
-        """测试风险计算器"""
-        # 加载数据
-        data = self.data_loader.load_data()
-        
-        # 计算风险指标
-        var = self.risk_calculator.calculate_var(data, 0.95)
-        es = self.risk_calculator.calculate_expected_shortfall(data)
-        
-        # 验证风险指标
-        self.assertIsInstance(var, float)
-        self.assertIsInstance(es, float)
-        self.assertLess(var, 0)  # VaR应该是负数
-        
-    def test_integration(self):
-        """测试系统集成"""
-        # 加载数据
-        data = self.data_loader.load_data()
-
-        # 创建策略
-        strategy = StrategyFactory.create_strategy('hybrid', self.config)
-
-        # 生成信号
-        signals = strategy.generate_signals(data)
-
-        # 创建执行器
-        executor = TradeExecutor(self.config)
-
-        # 执行交易
-        trades = []
-        for i in range(len(signals)):
-            if signals['signal'].iloc[i] != 0:
-                trade_advice = {
-                    'symbol': 'BTC/USD',
-                    'direction': 'buy' if signals['signal'].iloc[i] > 0 else 'sell',
-                    'quantity': abs(signals['signal'].iloc[i]),
-                    'price': data['close'].iloc[i]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._build_api_config(tmpdir)
+            dates = pd.date_range("2024-01-01", periods=180, freq="D")
+            timestamps = [int(ts.timestamp()) for ts in dates]
+            closes = np.linspace(100, 140, len(dates)).tolist()
+            payload = {
+                "chart": {
+                    "result": [
+                        {
+                            "timestamp": timestamps,
+                            "indicators": {
+                                "quote": [
+                                    {
+                                        "open": closes,
+                                        "high": [value + 1 for value in closes],
+                                        "low": [value - 1 for value in closes],
+                                        "close": closes,
+                                        "volume": list(np.linspace(1000, 5000, len(dates))),
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                    "error": None,
                 }
-                execution = executor.execute_trade(trade_advice, data.iloc[i:i+1])
-                trades.append(execution)
+            }
+            request_calls = []
 
-        # 创建回测引擎
-        backtest = BacktestEngine(self.config)
+            def fake_get(url, headers=None, params=None, timeout=None):
+                request_calls.append({"url": url, "headers": headers, "params": params, "timeout": timeout})
+                return SimpleNamespace(status_code=200, text="ok", raise_for_status=lambda: None, json=lambda: payload)
 
-        # 运行回测
-        results = backtest.run(data, 'hybrid')
+            fake_requests = SimpleNamespace(get=fake_get)
+            loader = DataLoader(config)
+            with mock.patch.object(loader, "_fetch_from_stooq", return_value=None) as stooq_mock, mock.patch.dict(
+                sys.modules, {"requests": fake_requests}
+            ):
+                market_data = loader.load_data(force_update=True)
 
-        # 验证结果
-        self.assertIsInstance(results, dict)
-        self.assertIn('equity_curve', results)
-        self.assertIn('trades', results)
-        self.assertIn('metrics', results)
+            self.assertIsNotNone(market_data)
+            self.assertFalse(market_data.empty)
+            self.assertIn("ma20", market_data.columns)
+            self.assertTrue(request_calls[0]["url"].endswith("/AAPL"))
+            self.assertEqual(request_calls[0]["params"]["interval"], "1d")
+            stooq_mock.assert_not_called()
 
-        # 验证性能指标
-        metrics = results['metrics']
-        self.assertGreater(metrics['annual_return'], -1)  # 年化收益率应该大于-100%
-        self.assertLess(metrics['max_drawdown'], 1)  # 最大回撤应该小于100%
-        self.assertGreater(metrics['sharpe_ratio'], -1000000)  # 夏普比率应该合理
-        
-if __name__ == '__main__':
-    unittest.main() 
+    def test_fetch_from_yahoo_chart_url_encodes_benchmark_symbol(self):
+        from src.utils.data_loader import DataLoader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._build_api_config(tmpdir)
+            loader = DataLoader(config)
+            request_calls = []
+            payload = {
+                "chart": {
+                    "result": [
+                        {
+                            "timestamp": [1704067200, 1704153600],
+                            "indicators": {
+                                "quote": [
+                                    {
+                                        "open": [100.0, 101.0],
+                                        "high": [101.0, 102.0],
+                                        "low": [99.0, 100.0],
+                                        "close": [100.5, 101.5],
+                                        "volume": [1000.0, 1200.0],
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                    "error": None,
+                }
+            }
+
+            def fake_get(url, headers=None, params=None, timeout=None):
+                request_calls.append({"url": url, "params": params, "timeout": timeout})
+                return SimpleNamespace(status_code=200, text="ok", raise_for_status=lambda: None, json=lambda: payload)
+
+            fake_requests = SimpleNamespace(get=fake_get)
+            with mock.patch.dict(sys.modules, {"requests": fake_requests}):
+                data = loader._fetch_from_yahoo_chart("^ndx", "1d")
+
+            self.assertIsNotNone(data)
+            self.assertFalse(data.empty)
+            self.assertTrue(request_calls[0]["url"].endswith("/%5ENDX"))
+
+    def test_api_data_loader_falls_back_to_yfinance_when_yahoo_chart_is_unavailable(self):
+        from src.utils.data_loader import DataLoader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._build_api_config(tmpdir)
+            dates = pd.date_range("2024-01-01", periods=180, freq="D")
+            raw_data = pd.DataFrame(
+                {
+                    "Open": np.linspace(100, 140, len(dates)),
+                    "High": np.linspace(101, 141, len(dates)),
+                    "Low": np.linspace(99, 139, len(dates)),
+                    "Close": np.linspace(100, 140, len(dates)),
+                    "Volume": np.linspace(1000, 5000, len(dates)),
+                },
+                index=dates,
+            )
+            download_calls = []
+
+            def fake_download(symbol, start=None, end=None, interval=None, progress=None, auto_adjust=None):
+                download_calls.append(
+                    {
+                        "symbol": symbol,
+                        "start": start,
+                        "end": end,
+                        "interval": interval,
+                        "progress": progress,
+                        "auto_adjust": auto_adjust,
+                    }
+                )
+                return raw_data.copy()
+
+            fake_yfinance = SimpleNamespace(download=fake_download)
+            loader = DataLoader(config)
+            with mock.patch.object(loader, "_fetch_from_yahoo_chart", return_value=None), mock.patch.dict(
+                sys.modules, {"yfinance": fake_yfinance}
+            ):
+                market_data = loader.load_data(force_update=True)
+
+            self.assertIsNotNone(market_data)
+            self.assertFalse(market_data.empty)
+            self.assertIn("ma20", market_data.columns)
+            self.assertEqual(download_calls[0]["symbol"], "AAPL")
+            self.assertEqual(download_calls[0]["interval"], "1d")
+
+    def test_benchmark_data_skips_yfinance_fallback_by_default(self):
+        from src.utils.data_loader import DataLoader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._build_api_config(tmpdir)
+            loader = DataLoader(config)
+            fallback_data = pd.DataFrame(
+                {
+                    "open": [100.0],
+                    "high": [101.0],
+                    "low": [99.0],
+                    "close": [100.5],
+                    "volume": [1000.0],
+                },
+                index=pd.date_range("2024-01-01", periods=1, freq="D"),
+            )
+
+            with mock.patch.object(loader, "_fetch_from_yahoo_chart", return_value=None) as yahoo_mock, mock.patch.object(
+                loader, "_fetch_from_yfinance", return_value=fallback_data
+            ) as yfinance_mock:
+                benchmark = loader.get_benchmark_data()
+
+            self.assertTrue(benchmark.empty)
+            yahoo_mock.assert_called_once()
+            yfinance_mock.assert_not_called()
+
+    def test_benchmark_data_uses_external_source_before_target_fallback_by_default(self):
+        from src.utils.data_loader import DataLoader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._build_api_config(tmpdir)
+            loader = DataLoader(config)
+            reference = pd.DataFrame(
+                {
+                    "open": [100.0, 101.0, 102.0],
+                    "high": [101.0, 102.0, 103.0],
+                    "low": [99.0, 100.0, 101.0],
+                    "close": [100.5, 101.5, 102.5],
+                    "volume": [1000.0, 1100.0, 1200.0],
+                },
+                index=pd.date_range("2024-01-01", periods=3, freq="D"),
+            )
+
+            with mock.patch.object(loader, "_fetch_from_yahoo_chart", return_value=None) as yahoo_mock, mock.patch.object(
+                loader, "_fetch_from_yfinance"
+            ) as yfinance_mock:
+                benchmark = loader.get_benchmark_data(reference_data=reference, reference_symbol="aapl.us")
+
+            self.assertFalse(benchmark.empty)
+            self.assertEqual(list(benchmark["close"]), [100.5, 101.5, 102.5])
+            yahoo_mock.assert_called_once()
+            yfinance_mock.assert_not_called()
+
+    def test_market_benchmark_uses_external_data_when_available(self):
+        from src.utils.data_loader import DataLoader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._build_api_config(tmpdir)
+            loader = DataLoader(config)
+            reference = pd.DataFrame(
+                {"close": [100.0, 101.0], "volume": [1000.0, 1200.0]},
+                index=pd.date_range("2024-01-01", periods=2, freq="D"),
+            )
+            external = pd.DataFrame(
+                {
+                    "open": [200.0, 202.0],
+                    "high": [201.0, 203.0],
+                    "low": [199.0, 201.0],
+                    "close": [200.5, 202.5],
+                    "volume": [5000.0, 5100.0],
+                },
+                index=pd.date_range("2024-01-01", periods=2, freq="D"),
+            )
+
+            with mock.patch.object(loader, "_fetch_from_yahoo_chart", return_value=external) as yahoo_mock:
+                benchmark = loader.get_benchmark_data(reference_data=reference, reference_symbol="aapl.us")
+
+            self.assertEqual(list(benchmark["close"]), [200.5, 202.5])
+            yahoo_mock.assert_called_once()
+
+    def test_market_benchmark_falls_back_to_target_reference(self):
+        from src.utils.data_loader import DataLoader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._build_api_config(tmpdir)
+            config["backtest"]["benchmark_source"] = "market"
+            config["backtest"]["benchmark_fallback_to_target"] = True
+            loader = DataLoader(config)
+            reference = pd.DataFrame(
+                {"close": [100.0, 103.0], "volume": [1000.0, 1200.0]},
+                index=pd.date_range("2024-01-01", periods=2, freq="D"),
+            )
+
+            with mock.patch.object(loader, "_fetch_from_yahoo_chart", return_value=None), mock.patch.object(
+                loader, "_fetch_from_yfinance"
+            ) as yfinance_mock:
+                benchmark = loader.get_benchmark_data(reference_data=reference, reference_symbol="aapl.us")
+
+            self.assertFalse(benchmark.empty)
+            self.assertEqual(list(benchmark["close"]), [100.0, 103.0])
+            yfinance_mock.assert_not_called()
+
+    def test_fetch_from_stooq_ignores_instruction_text(self):
+        from src.utils.data_loader import DataLoader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._build_api_config(tmpdir)
+            config["data"]["stooq_api_key"] = "demo-key"
+            loader = DataLoader(config)
+            response = mock.MagicMock()
+            response.__enter__.return_value = response
+            response.read.return_value = (
+                "Get your apikey:\n\n1. Open https://stooq.com/q/d/?s=aapl.us&get_apikey".encode("utf-8")
+            )
+
+            with mock.patch("src.utils.data_loader.urlopen", return_value=response):
+                data = loader._fetch_from_stooq("aapl.us", "d")
+
+            self.assertIsNone(data)
+
+    def test_signal_generation_and_backtest(self):
+        from src.agents.ml_strategy_agent import MLStrategyAgent
+        from src.utils.data_loader import DataLoader
+        from src.utils.data_processor import DataProcessor
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = self._build_sample_csv(tmpdir)
+            config = {
+                "data": {
+                    "source": "csv",
+                    "path": csv_path,
+                    "symbol": "sample.us",
+                    "interval": "d",
+                    "start_date": "2024-01-01",
+                    "end_date": "2024-12-31",
+                    "storage": {
+                        "base_dir": str(Path(tmpdir) / "market_data"),
+                        "raw_data_dir": "raw",
+                        "processed_data_dir": "processed",
+                    },
+                },
+                "strategy": {
+                    "fast_ma": 10,
+                    "slow_ma": 20,
+                    "rsi_long_threshold": 52,
+                    "rsi_short_threshold": 48,
+                    "allow_short": True,
+                },
+                "risk": {
+                    "stop_loss_pct": 0.03,
+                    "take_profit_pct": 0.08,
+                    "position_size": 1.0,
+                    "commission": 0.001,
+                    "slippage": 0.0005,
+                },
+                "backtest": {"initial_capital": 100000.0},
+                "llm": {"enabled": False},
+            }
+            loader = DataLoader(config)
+            processor = DataProcessor()
+            market_data = loader.load_data()
+            complete_data = processor.get_complete_data(market_data, min_periods=50)
+
+            agent = MLStrategyAgent(config, loader)
+            signals = agent.generate_signals(complete_data)
+            results = agent._backtest_strategy(complete_data, signals)
+            performance = agent._calculate_performance_metrics(results)
+            risk = agent._calculate_strategy_risk_metrics(results)
+
+            self.assertEqual(len(signals), len(complete_data))
+            self.assertIn("signal", signals.columns)
+            self.assertIn("equity_curve", results)
+            self.assertIn("trades", results)
+            self.assertIn("total_return", performance)
+            self.assertIn("max_drawdown", risk)
+
+    def test_backtest_plot_uses_non_gui_backend_and_writes_png(self):
+        import matplotlib
+
+        from src.agents.ml_strategy_agent import MLStrategyAgent
+        from src.utils.data_loader import DataLoader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._build_api_config(tmpdir)
+            loader = DataLoader(config)
+            agent = MLStrategyAgent(config, loader)
+            agent.results_dir = tmpdir
+            equity_curve = pd.Series(
+                [100000.0, 101000.0, 100500.0, 102000.0],
+                index=pd.date_range("2024-01-01", periods=4, freq="D"),
+            )
+
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                agent._plot_backtest_results({"equity_curve": equity_curve})
+
+            warning_messages = [str(item.message) for item in caught]
+            self.assertEqual(matplotlib.get_backend().lower(), "agg")
+            self.assertTrue((Path(tmpdir) / "backtest_results.png").exists())
+            self.assertFalse(any("Starting a Matplotlib GUI" in message for message in warning_messages))
+            self.assertFalse(any("Glyph" in message for message in warning_messages))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,20 @@
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+version = 1
+active_endpoint = "vip"
+default_model = "gpt-5.5"
+subagent_model = "gpt-5.4-mini"
+workspace = ""
+auto_download_update = true
+check_update_on_startup = true
+last_bootstrap_version = "0.120.3"
+[endpoints.vip]
+label = "Official Service"
+model = "gpt-5.4"
+enabled = true
+source = "local"
+notice = ""
+
+[ui]
+show_startup_notice = true
+show_update_notice = true

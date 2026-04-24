@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 交易工作台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="hero">
+      <div class="hero-main">
+        <p class="eyebrow">交易工作台 v0.9</p>
+        <h1>AI 交易工作台</h1>
+        <p class="hero-copy">这页只做四件事：先设定交易目标，再启动任务，然后盯住运行状态，最后检查结果。常用参数走上面的中文表单，只有需要细调时才打开高级 YAML。</p>
+
+        <div class="step-ribbon">
+          <article class="step-card">
+            <span>01</span>
+            <strong>设定目标</strong>
+            <small>标的、市场、数据源</small>
+          </article>
+          <article class="step-card">
+            <span>02</span>
+            <strong>启动任务</strong>
+            <small>研究 / 仿真 / 实盘演练</small>
+          </article>
+          <article class="step-card">
+            <span>03</span>
+            <strong>观察运行</strong>
+            <small>任务状态、实时日志</small>
+          </article>
+          <article class="step-card">
+            <span>04</span>
+            <strong>检查结果</strong>
+            <small>指标、曲线、产物文件</small>
+          </article>
+        </div>
+      </div>
+
+      <aside class="hero-board">
+        <div class="status-chip status-chip--ok">
+          <span class="status-dot"></span>
+          <span id="health-text">服务检查中</span>
+        </div>
+
+        <dl class="hero-meta">
+          <div>
+            <dt>配置文件</dt>
+            <dd id="config-path">-</dd>
+          </div>
+          <div>
+            <dt>结果目录</dt>
+            <dd id="results-root">-</dd>
+          </div>
+        </dl>
+
+        <div class="snapshot-grid">
+          <article class="snapshot-card">
+            <label>当前标的</label>
+            <strong id="summary-symbol">-</strong>
+          </article>
+          <article class="snapshot-card">
+            <label>市场规则</label>
+            <strong id="summary-market">-</strong>
+          </article>
+          <article class="snapshot-card">
+            <label>默认路径</label>
+            <strong id="summary-plan">-</strong>
+          </article>
+          <article class="snapshot-card">
+            <label>Live 通道</label>
+            <strong id="summary-adapter">-</strong>
+          </article>
+        </div>
+
+        <p id="desk-note" class="hero-note">读取配置后，这里会总结这次默认的运行计划。</p>
+      </aside>
+    </header>
+
+    <main class="workbench">
+      <section class="panel mission-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="panel-kicker">Step 1</p>
+            <h2>我要交易什么</h2>
+          </div>
+          <button id="reload-config" class="ghost-button">从磁盘重载</button>
+        </div>
+        <p class="panel-lead">先在这里决定标的、市场和数据方式。你只改这块，系统就能完成大部分常规研究和仿真。</p>
+
+        <div class="mission-grid">
+          <article class="field-group">
+            <div class="group-heading">
+              <h3>交易目标</h3>
+              <p>先决定这次是单标的还是多标的组合。</p>
+            </div>
+            <div class="quick-grid">
+              <label>
+                <span>主标的</span>
+                <input id="quick-symbol" type="text" placeholder="aapl.us">
+              </label>
+              <label>
+                <span>多标的列表</span>
+                <input id="quick-symbols" type="text" placeholder="aapl.us, 600000.sh">
+              </label>
+              <label>
+                <span>市场规则</span>
+                <select id="quick-market-profile">
+                  <option value="auto">自动识别</option>
+                  <option value="us_equity">美股</option>
+                  <option value="cn_equity">A股</option>
+                  <option value="hk_equity">港股</option>
+                  <option value="crypto_spot">加密现货</option>
+                </select>
+              </label>
+              <label>
+                <span>数据周期</span>
+                <input id="quick-interval" type="text" placeholder="d">
+              </label>
+            </div>
+          </article>
+
+          <article class="field-group">
+            <div class="group-heading">
+              <h3>数据与执行</h3>
+              <p>决定行情来源，以及实盘演练默认走哪条适配器通道。</p>
+            </div>
+            <div class="quick-grid">
+              <label>
+                <span>数据来源</span>
+                <select id="quick-source">
+                  <option value="api">在线行情</option>
+                  <option value="csv">本地 CSV</option>
+                </select>
+              </label>
+              <label>
+                <span>Live 通道</span>
+                <select id="quick-live-adapter">
+                  <option value="paper_live">模拟成交通道</option>
+                  <option value="real">真实券商通道</option>
+                </select>
+              </label>
+            </div>
+          </article>
+        </div>
+
+        <div class="toggle-board">
+          <label class="toggle toggle--wide">
+            <input id="quick-paper-enabled" type="checkbox">
+            <span>
+              <strong>启用仿真交易</strong>
+              <small>研究完成后自动接入 paper trading，生成账户权益和成交结果。</small>
+            </span>
+          </label>
+          <label class="toggle toggle--wide">
+            <input id="quick-portfolio-enabled" type="checkbox">
+            <span>
+              <strong>启用组合模式</strong>
+              <small>多标的时按组合方式分配仓位，而不是分别独立跑单标的。</small>
+            </span>
+          </label>
+          <label class="toggle toggle--wide">
+            <input id="quick-allow-short" type="checkbox">
+            <span>
+              <strong>允许做空</strong>
+              <small>只在市场规则允许且策略需要时生效。</small>
+            </span>
+          </label>
+          <label class="toggle toggle--wide">
+            <input id="save-before-run" type="checkbox" checked>
+            <span>
+              <strong>运行前写回配置文件</strong>
+              <small>勾选后会把当前最终配置保存到磁盘，再启动任务。</small>
+            </span>
+          </label>
+        </div>
+
+        <div id="config-sync-status" class="sync-banner sync-banner--clean">常用参数和高级配置已经同步，可以直接运行。</div>
+
+        <div class="toolbar-actions toolbar-actions--spread">
+          <button id="sync-quick" class="ghost-button">把常用参数写入高级配置</button>
+          <button id="save-config" class="primary-button">保存配置到磁盘</button>
+        </div>
+
+        <details class="yaml-drawer">
+          <summary>查看高级配置 YAML</summary>
+          <p class="drawer-note">需要更细的回测、风控或实盘参数时，再打开这里。运行任务时，最终以这段 YAML 为准。</p>
+          <textarea id="config-editor" spellcheck="false"></textarea>
+        </details>
+      </section>
+
+      <div class="side-stack">
+        <section class="panel run-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="panel-kicker">Step 2</p>
+              <h2>我要怎么跑</h2>
+            </div>
+          </div>
+          <p class="panel-lead">三个按钮分别对应不同层级：研究检查、仿真交易、实盘演练。先用前两个打通闭环，再碰 live。</p>
+
+          <div class="launch-grid">
+            <button class="launch-card launch-card--main" data-mode="main">
+              <span class="launch-badge">研究</span>
+              <strong>研究检查</strong>
+              <p>先跑策略研究；如果你勾了“启用仿真交易”，会继续接 paper trading。</p>
+            </button>
+            <button class="launch-card launch-card--paper" data-mode="paper">
+              <span class="launch-badge">仿真</span>
+              <strong>仿真交易</strong>
+              <p>直接看账户权益、订单和成交，适合验证执行规则和市场约束。</p>
+            </button>
+            <button class="launch-card launch-card--live" data-mode="live">
+              <span class="launch-badge">演练</span>
+              <strong>实盘演练</strong>
+              <p>跑一轮 live dry-run，检查交易时段、撤单重试、风控和适配器链路。</p>
+            </button>
+          </div>
+
+          <div class="inline-status" id="flash-message">等待操作</div>
+        </section>
+
+        <section class="panel monitor-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="panel-kicker">Step 3</p>
+              <h2>现在跑到哪了</h2>
+            </div>
+            <button id="refresh-jobs" class="ghost-button ghost-button--small">刷新任务</button>
+          </div>
+          <p class="panel-lead">先看任务卡片，再看下方日志。任务完成后，结果区会自动跳到对应的输出目录。</p>
+
+          <div id="jobs-list" class="stack-list empty-state">还没有启动任务</div>
+
+          <div class="subheading-row subheading-row--compact">
+            <h3>任务日志</h3>
+          </div>
+          <pre id="job-log-output" class="code-block code-block--compact">选择一条任务后显示最近日志</pre>
+        </section>
+
+        <section class="panel archive-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="panel-kicker">Step 4</p>
+              <h2>这次结果怎么样</h2>
+            </div>
+            <button id="refresh-results" class="ghost-button ghost-button--small">刷新结果</button>
+          </div>
+          <p class="panel-lead">这里是本地结果仓。点一条记录，下面会自动切换指标、曲线和重点产物。</p>
+          <div id="runs-list" class="stack-list empty-state">还没有检测到结果目录</div>
+        </section>
+      </div>
+
+      <section class="panel analysis-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="panel-kicker">Analysis</p>
+            <h2>结果分析台</h2>
+          </div>
+        </div>
+        <p class="panel-lead">先看关键指标，再看权益曲线，最后检查重点文件。原始 JSON 仍然保留，但折叠到最下面，避免打断主流程。</p>
+
+        <div id="detail-summary" class="metric-grid empty-state">选择一条结果后显示关键指标</div>
+
+        <div class="analysis-grid">
+          <section class="analysis-block analysis-block--wide">
+            <div class="subheading-row">
+              <h3>账户与权益曲线</h3>
+              <div id="chart-tabs" class="pill-row"></div>
+            </div>
+            <p id="chart-meta" class="panel-note">选择一条结果后显示曲线</p>
+            <div id="chart-canvas" class="chart-shell empty-state">选择一条结果后显示曲线</div>
+          </section>
+
+          <section class="analysis-block analysis-block--wide">
+            <div class="subheading-row">
+              <h3>AI 复盘</h3>
+              <span id="ai-review-source" class="micro-note">-</span>
+            </div>
+            <div id="ai-review" class="ai-review-shell empty-state">选择一条结果后显示复盘报告</div>
+          </section>
+
+          <section class="analysis-block">
+            <div class="subheading-row">
+              <h3>重点文件预览</h3>
+              <span id="preview-path" class="micro-note">-</span>
+            </div>
+            <div id="file-preview" class="preview-shell empty-state">选中结果后，这里会自动打开最关键的 JSON、CSV、日志或图片文件。</div>
+          </section>
+
+          <section class="analysis-block">
+            <div class="subheading-row">
+              <h3>结果产物清单</h3>
+            </div>
+            <div id="artifacts-list" class="stack-list empty-state">暂无产物</div>
+          </section>
+        </div>
+
+        <details class="debug-drawer">
+          <summary>开发视图：查看原始 JSON</summary>
+          <pre id="detail-json" class="code-block code-block--compact">{}</pre>
+        </details>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
