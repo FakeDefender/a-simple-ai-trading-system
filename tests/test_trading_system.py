@@ -178,6 +178,46 @@ class TestTradingSystem(unittest.TestCase):
             self.assertFalse(data.empty)
             self.assertTrue(request_calls[0]["url"].endswith("/%5ENDX"))
 
+    def test_fetch_from_yahoo_chart_normalizes_daily_index_to_date(self):
+        from src.utils.data_loader import DataLoader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._build_api_config(tmpdir)
+            loader = DataLoader(config)
+            payload = {
+                "chart": {
+                    "result": [
+                        {
+                            "timestamp": [1704205800, 1704292200],  # 2024-01-02/03 21:30:00 UTC
+                            "indicators": {
+                                "quote": [
+                                    {
+                                        "open": [100.0, 101.0],
+                                        "high": [101.0, 102.0],
+                                        "low": [99.0, 100.0],
+                                        "close": [100.5, 101.5],
+                                        "volume": [1000.0, 1200.0],
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                    "error": None,
+                }
+            }
+
+            def fake_get(url, headers=None, params=None, timeout=None):
+                return SimpleNamespace(status_code=200, text="ok", raise_for_status=lambda: None, json=lambda: payload)
+
+            fake_requests = SimpleNamespace(get=fake_get)
+            with mock.patch.dict(sys.modules, {"requests": fake_requests}):
+                data = loader._fetch_from_yahoo_chart("aapl.us", "1d")
+
+            self.assertIsNotNone(data)
+            self.assertFalse(data.empty)
+            self.assertEqual(str(data.index[0]), "2024-01-02 00:00:00")
+            self.assertTrue((data.index.hour == 0).all())
+
     def test_api_data_loader_falls_back_to_yfinance_when_yahoo_chart_is_unavailable(self):
         from src.utils.data_loader import DataLoader
 

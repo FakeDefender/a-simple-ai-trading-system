@@ -1,4 +1,7 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 try:
     import numpy as np
@@ -222,6 +225,91 @@ class TestLiveService(unittest.TestCase):
         canceled = adapter.cancel_order(order.order_id, pd.Timestamp("2024-01-02 10:01:00"), reason="manual")
         self.assertEqual(canceled.status, "canceled")
         self.assertEqual(len(adapter.get_open_orders("real.us")), 0)
+
+    def test_live_service_writes_event_and_alert_journals(self):
+        from src.execution.live_trading_service import LiveTradingService
+
+        dataset = self._build_market_frame(["2024-01-02 10:00:00"], [100.0])
+        loader = FakeDataLoader([dataset])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "data": {"symbol": "svc.us", "interval": "1m"},
+                "strategy": {"allow_short": False, "slow_ma": 2},
+                "risk": {"commission": 0.0, "slippage": 0.0},
+                "live_trading": {
+                    "enabled": True,
+                    "initial_cash": 100000.0,
+                    "allocation_pct": 0.5,
+                    "reject_first_n_orders": 1,
+                    "close_positions_on_finish": False,
+                },
+                "live_service": {
+                    "save_results_each_cycle": False,
+                    "force_update_each_cycle": False,
+                    "results_root": str(Path(tmpdir) / "live_service"),
+                    "max_cycles": 1,
+                },
+            }
+
+            service = LiveTradingService(
+                config,
+                data_loader=loader,
+                data_processor=PassthroughProcessor(),
+                strategy_agent=FixedSignalAgent(),
+                sleep_fn=lambda seconds: None,
+            )
+            payload = service.run_once()
+
+            event_log = Path(service.results_dir) / "live_events.jsonl"
+            alert_log = Path(service.results_dir) / "live_alerts.jsonl"
+            self.assertTrue(event_log.exists())
+            self.assertTrue(alert_log.exists())
+            self.assertTrue(any(event["event_type"] == "service_cycle_started" for event in payload["recent_events"]))
+
+            event_lines = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+            alert_lines = [json.loads(line) for line in alert_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertTrue(any(line["event_type"] == "order_rejected" for line in event_lines))
+            self.assertTrue(any(line["alert_type"] == "order_rejected" for line in alert_lines))
+
+    def test_live_service_writes_reconciliation_and_operator_reports(self):
+        from src.execution.live_trading_service import LiveTradingService
+
+        dataset = self._build_market_frame(["2024-01-02 10:00:00"], [100.0])
+        loader = FakeDataLoader([dataset])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "data": {"symbol": "svc.us", "interval": "1m"},
+                "strategy": {"allow_short": False, "slow_ma": 2},
+                "risk": {"commission": 0.0, "slippage": 0.0},
+                "live_trading": {
+                    "enabled": True,
+                    "initial_cash": 100000.0,
+                    "allocation_pct": 0.5,
+                    "close_positions_on_finish": False,
+                },
+                "live_service": {
+                    "save_results_each_cycle": True,
+                    "force_update_each_cycle": False,
+                    "results_root": str(Path(tmpdir) / "live_service"),
+                    "max_cycles": 1,
+                },
+            }
+
+            service = LiveTradingService(
+                config,
+                data_loader=loader,
+                data_processor=PassthroughProcessor(),
+                strategy_agent=FixedSignalAgent(),
+                sleep_fn=lambda seconds: None,
+            )
+            payload = service.run_once()
+
+            reconciliation_file = Path(service.results_dir) / "live_reconciliation.json"
+            operator_file = Path(service.results_dir) / "live_operator_report.json"
+            self.assertTrue(reconciliation_file.exists())
+            self.assertTrue(operator_file.exists())
+            self.assertEqual(payload["reconciliation"]["status"], "ok")
+            self.assertIn("operator_report", payload)
 
 
 if __name__ == "__main__":

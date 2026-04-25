@@ -1,12 +1,9 @@
-# 需要安装 imbalanced-learn: pip install imbalanced-learn
 import pandas as pd
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, accuracy_score, mean_squared_error
 import joblib
 from sklearn.preprocessing import LabelEncoder
-from collections import Counter
-from imblearn.over_sampling import SMOTE
 import matplotlib.pyplot as plt
 import warnings
 import numpy as np
@@ -25,38 +22,39 @@ def train_xgboost_models(train_csv=TRAIN_CSV):
     df = pd.read_csv(train_csv)
     # 选择特征列（去除目标变量和无关列）
     feature_cols = [col for col in df.columns if col not in ['ml_signal', 'next_return', 'date']]
-    X = df[feature_cols]
+    X = df[feature_cols].copy()
     y_cls = df['ml_signal']
     y_reg = df['next_return']
     # 编码所有object类型特征为数字
     for col in X.select_dtypes(include=['object']).columns:
         le = LabelEncoder()
         X[col] = le.fit_transform(X[col].astype(str))
-    # 标签映射：-1->0, 0->1, 1->2
-    label_map = {-1: 0, 0: 1, 1: 2}
-    inv_label_map = {0: -1, 1: 0, 2: 1}
-    y_cls_mapped = y_cls.map(label_map)
     # 填补所有特征的缺失值（用中位数）
     X = X.fillna(X.median(numeric_only=True))
     # 剔除y中为NaN的样本
-    mask = ~y_cls_mapped.isna()
+    mask = ~y_cls.isna()
     X = X[mask]
-    y_cls_mapped = y_cls_mapped[mask]
-    # 检查并只保留有样本的类别
-    unique_classes = np.array(sorted(y_cls_mapped.dropna().unique()))
-    # 计算类别权重
-    from sklearn.utils.class_weight import compute_class_weight
-    weights = compute_class_weight('balanced', classes=unique_classes, y=y_cls_mapped)
-    class_weight_dict = {k: v for k, v in zip(unique_classes, weights)}
-    X_train, X_test, y_train, y_test = train_test_split(X, y_cls_mapped, test_size=0.2, random_state=42, stratify=y_cls_mapped)
-    clf = xgb.XGBClassifier(objective='multi:softmax', num_class=len(unique_classes), eval_metric='mlogloss', scale_pos_weight=1)
-    # xgboost不直接支持class_weight参数，需手动加sample_weight
-    sample_weight = y_train.map(class_weight_dict)
+    y_cls_clean = y_cls[mask]
     try:
+        if y_cls_clean.nunique() < 2:
+            raise ValueError("分类标签少于 2 类，跳过信号分类模型训练")
+        label_encoder = LabelEncoder()
+        y_cls_mapped = pd.Series(label_encoder.fit_transform(y_cls_clean), index=y_cls_clean.index)
+        unique_classes = np.array(sorted(y_cls_mapped.unique()))
+        # 计算类别权重
+        from sklearn.utils.class_weight import compute_class_weight
+        weights = compute_class_weight('balanced', classes=unique_classes, y=y_cls_mapped)
+        class_weight_dict = {k: v for k, v in zip(unique_classes, weights)}
+        class_counts = y_cls_mapped.value_counts()
+        stratify = y_cls_mapped if int(class_counts.min()) >= 2 else None
+        X_train, X_test, y_train, y_test = train_test_split(X, y_cls_mapped, test_size=0.2, random_state=42, stratify=stratify)
+        clf = xgb.XGBClassifier(objective='multi:softmax', num_class=len(unique_classes), eval_metric='mlogloss')
+        # xgboost不直接支持class_weight参数，需手动加sample_weight
+        sample_weight = y_train.map(class_weight_dict)
         clf.fit(X_train, y_train, sample_weight=sample_weight)
         y_pred = clf.predict(X_test)
-        y_test_inv = y_test.map(inv_label_map)
-        y_pred_inv = pd.Series(y_pred).map(inv_label_map)
+        y_test_inv = pd.Series(label_encoder.inverse_transform(y_test.to_numpy()), index=y_test.index)
+        y_pred_inv = pd.Series(label_encoder.inverse_transform(y_pred))
         print('信号分类模型评估:')
         from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
         print(classification_report(y_test_inv, y_pred_inv))
@@ -94,6 +92,7 @@ def train_xgboost_models(train_csv=TRAIN_CSV):
         print('分类模型训练或评估异常:', e)
     try:
         # 回归模型（收益率）
+        y_reg = y_reg.loc[X.index]
         reg_mask = ~y_reg.isna()
         X_reg = X[reg_mask]
         y_reg_clean = y_reg[reg_mask]
@@ -127,4 +126,4 @@ def train_xgboost_models(train_csv=TRAIN_CSV):
         print('回归模型训练或评估异常:', e)
 
 if __name__ == '__main__':
-    train_xgboost_models() 
+    train_xgboost_models()

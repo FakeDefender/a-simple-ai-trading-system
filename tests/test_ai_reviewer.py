@@ -109,6 +109,8 @@ class TestAIReviewer(unittest.TestCase):
         self.assertEqual(client.calls[0]["max_tokens"], 321)
         self.assertEqual(client.calls[0]["timeout"], 4.5)
         self.assertEqual(client.calls[0]["model"], "fast-review-model")
+        self.assertEqual(client.calls[0]["response_format"], {"type": "json_object"})
+        self.assertEqual(client.calls[0]["thinking"], "disabled")
         self.assertLess(len(client.calls[0]["user_prompt"]), 2000)
 
     def test_generate_ai_review_falls_back_when_llm_returns_non_json(self):
@@ -139,7 +141,7 @@ class TestAIReviewer(unittest.TestCase):
                     "llm": {
                         "enabled": True,
                         "provider": "deepseek",
-                        "model": "deepseek-chat",
+                        "model": "deepseek-v4-flash",
                         "base_url": "https://api.deepseek.com",
                         "timeout": 7,
                     },
@@ -153,6 +155,45 @@ class TestAIReviewer(unittest.TestCase):
             timeout=7.0,
             max_retries=0,
         )
+
+    def test_openai_client_passes_deepseek_json_and_thinking_options(self):
+        from src.utils.openai_client import OpenAIClient
+
+        fake_message = mock.Mock(content='{"ok":true}')
+        fake_choice = mock.Mock(message=fake_message)
+        fake_response = mock.Mock(choices=[fake_choice])
+
+        with mock.patch("src.utils.openai_client.OpenAI") as openai_class:
+            client_instance = openai_class.return_value
+            client_instance.chat.completions.create.return_value = fake_response
+            client = OpenAIClient(
+                {
+                    "llm": {
+                        "enabled": True,
+                        "provider": "deepseek",
+                        "model": "deepseek-v4-flash",
+                        "base_url": "https://api.deepseek.com",
+                        "thinking": "enabled",
+                        "reasoning_effort": "low",
+                    },
+                    "api_keys": {"deepseek": {"api_key": "unit-test-key"}},
+                }
+            )
+
+            result = client.chat(
+                "system",
+                "user",
+                response_format={"type": "json_object"},
+                max_tokens=12,
+            )
+
+        self.assertEqual(result, '{"ok":true}')
+        kwargs = client_instance.chat.completions.create.call_args.kwargs
+        self.assertEqual(kwargs["model"], "deepseek-v4-flash")
+        self.assertEqual(kwargs["response_format"], {"type": "json_object"})
+        self.assertEqual(kwargs["extra_body"], {"thinking": {"type": "enabled"}})
+        self.assertEqual(kwargs["reasoning_effort"], "low")
+        self.assertNotIn("temperature", kwargs)
 
 
 if __name__ == "__main__":

@@ -93,6 +93,12 @@ class DataLoader:
             return mapping[normalized_interval]
         return str(self.config.get("data", {}).get("timeframe", "1d"))
 
+    def _normalize_timeframe_index(self, index: pd.Index, timeframe: str) -> pd.Index:
+        normalized_timeframe = str(timeframe or "").lower()
+        if normalized_timeframe in {"1d", "1wk", "1mo"}:
+            return pd.DatetimeIndex(index).normalize()
+        return index
+
     def _stooq_api_key(self) -> str:
         return str(self.config.get("data", {}).get("stooq_api_key", "")).strip()
 
@@ -254,6 +260,7 @@ class DataLoader:
 
         quote_payload = quote_list[0]
         index = pd.to_datetime(timestamps, unit="s", utc=True).tz_convert(None)
+        index = self._normalize_timeframe_index(index, timeframe)
         frame = pd.DataFrame(
             {
                 "open": quote_payload.get("open", []),

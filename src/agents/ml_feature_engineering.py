@@ -60,9 +60,21 @@ def generate_ml_training_data(market_data: pd.DataFrame, agent: MLStrategyAgent,
 if __name__ == "__main__":
     from src.utils.config_loader import load_config
     from src.utils.data_loader import DataLoader
+    from src.utils.data_processor import DataProcessor
+
     config = load_config()
     data_loader = DataLoader(config)
+    data_processor = DataProcessor()
+    data_config = config.get("data", {})
+    symbol = data_config.get("symbol", "aapl.us")
+    interval = data_config.get("interval", "d")
+    market_data = data_loader.load_data(symbol=symbol, interval=interval, force_update=False)
+    if market_data is None or market_data.empty:
+        raise RuntimeError(f"未获取到 {symbol} 的有效市场数据")
+    complete_data = data_processor.get_complete_data(
+        market_data,
+        min_periods=max(50, int(config.get("strategy", {}).get("slow_ma", 20))),
+    )
     agent = MLStrategyAgent(config, data_loader)
-    market_data = pd.read_csv('你的market_data文件.csv')
-    df = generate_ml_training_data(market_data, agent, output_csv='ml_training_data.csv')
-    print(df.head()) 
+    df = generate_ml_training_data(complete_data, agent, output_csv="ml_training_data.csv")
+    print(df.head())

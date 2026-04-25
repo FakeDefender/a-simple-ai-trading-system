@@ -9,6 +9,7 @@ import pandas as pd
 
 from .broker_adapter import PaperLiveBrokerAdapter, build_live_adapter
 from .live_broker import PaperLiveBroker
+from .observability import EventBus, build_event
 from .live_risk_manager import LiveRiskManager
 from .market_profile import MarketProfileResolver
 from .market_session import MarketSession
@@ -48,6 +49,7 @@ class LiveTradingEngine:
         broker: Optional[PaperLiveBroker] = None,
         session: Optional[MarketSession] = None,
         risk_manager: Optional[LiveRiskManager] = None,
+        event_bus: Optional[EventBus] = None,
     ):
         self.config = config or {}
         self.market_resolver = MarketProfileResolver(self.config)
@@ -64,6 +66,7 @@ class LiveTradingEngine:
 
         self._external_session = session
         self._external_risk_manager = risk_manager
+        self.event_bus = event_bus
         self.session = session or self._build_session()
         self.risk_manager = risk_manager or self._build_risk_manager()
 
@@ -71,6 +74,28 @@ class LiveTradingEngine:
         self._failed_attempts: Dict[str, int] = {}
         self._history_rows: List[Dict[str, Any]] = []
         self._last_processed_at = None
+
+    def _emit_event(
+        self,
+        event_type: str,
+        timestamp: Any,
+        severity: str = "info",
+        message: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ):
+        if self.event_bus is None:
+            return
+        self.event_bus.publish(
+            build_event(
+                event_type=event_type,
+                source="live_engine",
+                timestamp=timestamp,
+                severity=severity,
+                symbol=self.symbol,
+                message=message,
+                payload=payload,
+            )
+        )
 
     def _resolve_live_config(self, symbol: Optional[str]) -> Dict[str, Any]:
         live_config = dict(DEFAULT_LIVE_TRADING_CONFIG)
@@ -306,16 +331,50 @@ class LiveTradingEngine:
         if cycle_fills:
             self.risk_manager.record_success()
             self._failed_attempts[self.symbol] = 0
+            for fill in cycle_fills:
+                self._emit_event(
+                    "order_filled",
+                    fill.filled_at,
+                    payload={
+                        "order_id": fill.order_id,
+                        "side": fill.side,
+                        "quantity": float(fill.quantity),
+                        "fill_price": float(fill.fill_price),
+                        "realized_pnl": float(fill.realized_pnl),
+                    },
+                )
 
         snapshot = self.adapter.get_account_snapshot(timestamp)
         self._peak_equity = max(self._peak_equity, float(snapshot.equity))
         risk_state = self.risk_manager.evaluate(snapshot, timestamp)
+        self._emit_event(
+            "account_snapshot",
+            timestamp,
+            payload={
+                "equity": float(snapshot.equity),
+                "cash": float(snapshot.cash),
+                "daily_drawdown": float(risk_state.get("daily_drawdown", 0.0)),
+                "open_orders": int(snapshot.open_orders),
+                "active_positions": int(snapshot.active_positions),
+            },
+        )
         current_position = self.adapter.get_position(self.symbol)
         session_state = self.session.get_state(timestamp)
 
         desired_target = float(current_position.quantity)
         decision_reason = "hold"
         if risk_state.get("hard_halt", False):
+            self._emit_event(
+                "risk_halt",
+                timestamp,
+                severity="critical",
+                message="触发 live 风控暂停",
+                payload={
+                    "reason": risk_state.get("reason", "blocked"),
+                    "daily_drawdown": float(risk_state.get("daily_drawdown", 0.0)),
+                    "equity": float(snapshot.equity),
+                },
+            )
             if abs(current_position.quantity) > 1e-12:
                 desired_target = 0.0
                 decision_reason = "risk_flatten"
@@ -332,11 +391,28 @@ class LiveTradingEngine:
         target_quantity, session_reason = self._constrain_target_by_session(session_state, current_position.quantity, desired_target)
         if session_reason != "session_open":
             decision_reason = session_reason
+            self._emit_event(
+                "session_blocked",
+                timestamp,
+                message=session_reason,
+                payload={
+                    "session_state": session_state,
+                    "current_quantity": float(current_position.quantity),
+                    "desired_target": float(desired_target),
+                },
+            )
 
         execution_event = "hold"
         canceled_count = self._cancel_stale_orders(timestamp)
         if canceled_count > 0:
             execution_event = "cancel_stale_order"
+            self._emit_event(
+                "order_canceled",
+                timestamp,
+                severity="warning",
+                message="撤销超时订单",
+                payload={"canceled_orders": int(canceled_count)},
+            )
             if decision_reason == "hold":
                 decision_reason = "stale_order_canceled"
 
@@ -378,14 +454,49 @@ class LiveTradingEngine:
                         self.risk_manager.record_submission(timestamp)
                         if order.status == "rejected":
                             execution_event = "order_rejected"
+                            self._emit_event(
+                                "order_rejected",
+                                timestamp,
+                                severity="warning",
+                                message="订单提交被拒绝",
+                                payload={
+                                    "order_id": order.order_id,
+                                    "side": order.side,
+                                    "quantity": float(order.quantity),
+                                    "status_reason": order.status_reason,
+                                },
+                            )
                             self.risk_manager.record_failure()
                             self._failed_attempts[self.symbol] = self._failed_attempts.get(self.symbol, 0) + 1
                             if decision_reason == "signal_target":
                                 decision_reason = "order_rejected"
                         else:
                             execution_event = "order_submitted"
+                            self._emit_event(
+                                "order_submitted",
+                                timestamp,
+                                message="订单已提交",
+                                payload={
+                                    "order_id": order.order_id,
+                                    "side": order.side,
+                                    "quantity": float(order.quantity),
+                                    "target_quantity": float(target_quantity),
+                                },
+                            )
                             same_cycle_fills = self.adapter.process_pending_orders({self.symbol: price}, timestamp)
                             if same_cycle_fills:
+                                for fill in same_cycle_fills:
+                                    self._emit_event(
+                                        "order_filled",
+                                        fill.filled_at,
+                                        payload={
+                                            "order_id": fill.order_id,
+                                            "side": fill.side,
+                                            "quantity": float(fill.quantity),
+                                            "fill_price": float(fill.fill_price),
+                                            "realized_pnl": float(fill.realized_pnl),
+                                        },
+                                    )
                                 latest_fill = next(
                                     (fill for fill in reversed(same_cycle_fills) if fill.symbol == self.symbol),
                                     latest_fill,
@@ -435,6 +546,16 @@ class LiveTradingEngine:
         closing_fill = next((fill for fill in reversed(same_cycle_fills) if fill.symbol == self.symbol), None)
         if closing_fill is not None:
             self.risk_manager.record_success()
+            self._emit_event(
+                "position_flattened",
+                closing_fill.filled_at,
+                message="收盘或结束时强制平仓",
+                payload={
+                    "order_id": closing_order.order_id,
+                    "fill_price": float(closing_fill.fill_price),
+                    "quantity": float(closing_fill.quantity),
+                },
+            )
         self.adapter.mark_to_market(self.symbol, price, timestamp)
         final_risk_state = self.risk_manager.evaluate(self.adapter.get_account_snapshot(timestamp), timestamp)
         self._history_rows.append(

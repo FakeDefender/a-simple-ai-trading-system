@@ -5,6 +5,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 from src.utils.config_loader import load_config
 from src.utils.data_loader import DataLoader
 
+__test__ = False
+
 if __name__ == "__main__":
     config = load_config()
     data_loader = DataLoader(config)
@@ -18,4 +20,4 @@ if __name__ == "__main__":
         print("缺失值统计：")
         print(benchmark_data.isnull().sum())
     else:
-        print("获取失败或数据为空。") 
+        print("获取失败或数据为空。")

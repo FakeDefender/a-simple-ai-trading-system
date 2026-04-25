@@ -1,39 +1,88 @@
+"""Generate the latest signal using current config and optional optimized params."""
+
+import argparse
+import os
+import sys
+from pathlib import Path
+from typing import Any, Dict
+
 import pandas as pd
+
+if __package__ in {None, ""}:
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, PROJECT_ROOT)
+
 from src.agents.ml_strategy_agent import MLStrategyAgent
-from src.utils.data_loader import DataLoader
 from src.utils.config_loader import load_config
+from src.utils.data_loader import DataLoader
+from src.utils.data_processor import DataProcessor
 
-# 1. 加载配置和数据
-config = load_config()
-data_loader = DataLoader(config)
-symbol = config['data']['symbol']
-interval = config['data']['interval']
-market_data = data_loader.load_data(symbol, interval, force_update=False)
-market_data = market_data.iloc[50:].copy()
 
-# 2. 自动读取最优参数（多重排序：夏普比率、总收益率、最大回撤）
-results_file = 'params/param_opt_results.csv'
-results_df = pd.read_csv(results_file)
-# 多重排序：先夏普，再收益，再回撤
-best_row = results_df.sort_values(
-    ['sharpe_ratio', 'total_return', 'max_drawdown'],
-    ascending=[False, False, True]
-).iloc[0]
-# 只保留参数列（去掉统计指标）
-stat_cols = ['total_return', 'sharpe_ratio', 'win_rate', 'profit_factor', 'max_drawdown', 'var_95', 'volatility']
-param_cols = [col for col in results_df.columns if col not in stat_cols]
-best_params = best_row[param_cols].to_dict()
+PARAM_COLUMNS = {
+    "fast_ma",
+    "slow_ma",
+    "rsi_long_threshold",
+    "rsi_short_threshold",
+    "rsi_exit_long",
+    "rsi_exit_short",
+    "min_volume_ratio",
+    "stop_loss_pct",
+    "take_profit_pct",
+}
 
-# 3. 实例化策略
-agent = MLStrategyAgent(config, data_loader, strategy_params=best_params)
 
-# 4. 只用最新一行数据预测
-latest_data = market_data.tail(1)
-signals = agent.generate_signals(latest_data)
-latest_signal = signals.iloc[-1]['signal']
-if latest_signal == 1:
-    print("建议：买入/做多")
-elif latest_signal == -1:
-    print("建议：卖出/做空")
-else:
-    print("建议：观望") 
+def load_best_params(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+
+    frame = pd.read_csv(path)
+    if frame.empty:
+        return {}
+    sort_columns = [column for column in ["sharpe_ratio", "total_return", "max_drawdown"] if column in frame.columns]
+    if sort_columns:
+        ascending = [False if column != "max_drawdown" else True for column in sort_columns]
+        best_row = frame.sort_values(sort_columns, ascending=ascending).iloc[0]
+    else:
+        best_row = frame.iloc[0]
+    return {column: best_row[column] for column in PARAM_COLUMNS if column in frame.columns and pd.notna(best_row[column])}
+
+
+def load_complete_market_data(config: Dict[str, Any]) -> pd.DataFrame:
+    data_loader = DataLoader(config)
+    data_processor = DataProcessor()
+    data_config = config.get("data", {})
+    strategy_config = config.get("strategy", {})
+    symbol = data_config.get("symbol", "aapl.us")
+    interval = data_config.get("interval", "d")
+    market_data = data_loader.load_data(symbol=symbol, interval=interval, force_update=False)
+    if market_data is None or market_data.empty:
+        raise RuntimeError(f"未获取到 {symbol} 的有效市场数据")
+    min_periods = max(50, int(strategy_config.get("slow_ma", 20)))
+    return data_processor.get_complete_data(market_data, min_periods=min_periods)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="输出当前标的最新一根 K 线对应的策略信号")
+    parser.add_argument("--params", default="params/param_opt_results.csv", help="可选参数搜索结果 CSV")
+    args = parser.parse_args()
+
+    config = load_config()
+    data_loader = DataLoader(config)
+    market_data = load_complete_market_data(config)
+    best_params = load_best_params(Path(args.params))
+
+    agent = MLStrategyAgent(config, data_loader, strategy_params=best_params or None)
+    signals = agent.generate_signals(market_data)
+    latest_timestamp = signals.index[-1]
+    latest_signal = int(signals.iloc[-1]["signal"])
+
+    label = {1: "买入/做多", -1: "卖出/做空", 0: "观望"}.get(latest_signal, "未知")
+    print(f"最新时间: {latest_timestamp}")
+    print(f"最新信号: {latest_signal} ({label})")
+    if best_params:
+        print(f"使用优化参数: {best_params}")
+
+
+if __name__ == "__main__":
+    main()

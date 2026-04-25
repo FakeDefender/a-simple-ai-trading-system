@@ -27,10 +27,10 @@ strategy:
   rsi_short_threshold: 45
   rsi_exit_long: 48
   rsi_exit_short: 52
-  min_volume_ratio: 1.0
-  allow_short: true
+  min_volume_ratio: 1.2
+  allow_short: false
 risk:
-  stop_loss_pct: 0.03
+  stop_loss_pct: 0.02
   take_profit_pct: 0.06
   max_drawdown: 0.2
   daily_loss_limit: 0.05
@@ -51,17 +51,17 @@ backtest:
 paper_trading:
   enabled: true
   initial_cash: 100000.0
-  allocation_pct: 0.95
+  allocation_pct: 0.6
   allow_fractional: false
-  allow_short: true
+  allow_short: false
   lot_size: 1.0
   close_positions_on_finish: true
   price_field: close
   quantity_precision: 6
-  rebalance_frequency: daily
+  rebalance_frequency: weekly
   rebalance_weekday: 0
   rebalance_day_of_month: 1
-  turnover_buffer: 0.0
+  turnover_buffer: 0.01
   max_account_drawdown: 0.2
   adapter: paper
 portfolio:
@@ -122,6 +122,28 @@ broker:
   base_url: ''
   account_id: ''
   timeout_seconds: 10.0
+  endpoints:
+    submit_order:
+      method: POST
+      path: /orders
+    cancel_order:
+      method: POST
+      path: /orders/{broker_order_id}/cancel
+    get_order:
+      method: GET
+      path: /orders/{broker_order_id}
+    list_open_orders:
+      method: GET
+      path: /orders/open
+    list_fills:
+      method: GET
+      path: /fills
+    get_account:
+      method: GET
+      path: /account
+    list_positions:
+      method: GET
+      path: /positions
 live_service:
   poll_interval_seconds: 60
   force_update_each_cycle: true
@@ -129,10 +151,17 @@ live_service:
   max_cycles: 1
   stop_on_error: true
   results_root: results/live_service
+monitoring:
+  enabled: true
+  max_recent_events: 2000
+  event_journal_filename: live_events.jsonl
+  alert_log_filename: live_alerts.jsonl
+  drawdown_alert_threshold: 0.02
 llm:
   enabled: true
   provider: deepseek
-  model: deepseek-v4-pro
+  model: deepseek-v4-flash
+  review_model: deepseek-v4-flash
   temperature: 0.2
   max_tokens: 1200
   timeout: 120.0
@@ -140,3 +169,12 @@ llm:
   review_max_tokens: 1200
   review_timeout: 120.0
   base_url: https://api.deepseek.com
+  thinking: disabled
+  review_thinking: disabled
+  reasoning_effort: null
+  event_factor_enabled: false
+  event_factor_model: deepseek-v4-flash
+  event_factor_max_tokens: 300
+  event_factor_timeout: 30.0
+  event_factor_thinking: disabled
+  event_factor_reasoning_effort: null

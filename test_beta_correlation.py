@@ -7,6 +7,8 @@ from src.utils.config_loader import load_config
 from src.utils.data_loader import DataLoader
 from src.agents.ml_strategy_agent import MLStrategyAgent
 
+__test__ = False
+
 if __name__ == "__main__":
     # 加载配置和初始化
     config = load_config()
@@ -32,4 +34,4 @@ if __name__ == "__main__":
         correlation = agent._calculate_correlation(equity_curve, benchmark_data)
         print(f"测试结果：Beta={beta}, Correlation={correlation}")
     else:
-        print("benchmark_data 为空，无法测试。") 
+        print("benchmark_data 为空，无法测试。")

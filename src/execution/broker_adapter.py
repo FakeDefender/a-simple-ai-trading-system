@@ -4,6 +4,7 @@ import math
 from abc import ABC, abstractmethod
 from itertools import count
 from typing import Any, Dict, Iterable, List, Optional
+from urllib.parse import quote
 
 from .cost_model import ExecutionCostModel
 from .live_broker import PaperLiveBroker
@@ -99,39 +100,180 @@ class BrokerAPIClient(ABC):
 
 
 class ConfigurableRESTBrokerClient(BrokerAPIClient):
-    def __init__(self, config: Dict[str, Any]):
+    DEFAULT_ENDPOINTS = {
+        "submit_order": {"method": "POST", "path": "/orders"},
+        "cancel_order": {"method": "POST", "path": "/orders/{broker_order_id}/cancel"},
+        "get_order": {"method": "GET", "path": "/orders/{broker_order_id}"},
+        "list_open_orders": {"method": "GET", "path": "/orders/open"},
+        "list_fills": {"method": "GET", "path": "/fills"},
+        "get_account": {"method": "GET", "path": "/account"},
+        "list_positions": {"method": "GET", "path": "/positions"},
+    }
+
+    def __init__(self, config: Dict[str, Any], session: Optional[Any] = None):
         broker_config = config.get("broker", {})
         self.provider = str(broker_config.get("provider", "generic_rest"))
-        self.base_url = str(broker_config.get("base_url", "")).rstrip("/")
+        provider_secrets = config.get("api_keys", {}).get(self.provider, {})
+        if not isinstance(provider_secrets, dict):
+            provider_secrets = {}
+
+        self.base_url = str(broker_config.get("base_url") or provider_secrets.get("base_url") or "").rstrip("/")
         self.account_id = str(broker_config.get("account_id", ""))
         self.timeout_seconds = float(broker_config.get("timeout_seconds", 10.0))
         self.paper = bool(broker_config.get("paper", True))
-
-    def _not_implemented(self, action: str):
-        raise NotImplementedError(
-            f"broker.provider={self.provider} 的 {action} 还没有实现，请为目标券商补一个 BrokerAPIClient。"
+        self.headers = dict(broker_config.get("headers", {}) or {})
+        self.auth_config = dict(broker_config.get("auth", {}) or {})
+        self.api_key = (
+            broker_config.get("api_key")
+            or self.auth_config.get("token")
+            or provider_secrets.get("api_key")
+            or provider_secrets.get("token")
         )
+        self.endpoints = dict(self.DEFAULT_ENDPOINTS)
+        self.endpoints.update(dict(broker_config.get("endpoints", {}) or {}))
+        self.response_paths = dict(broker_config.get("response_paths", {}) or {})
+        if session is None:
+            try:
+                import requests
+            except ImportError as exc:  # pragma: no cover
+                raise RuntimeError("未安装 requests，无法使用 ConfigurableRESTBrokerClient") from exc
+            session = requests.Session()
+        self.session = session
+
+    def _endpoint_config(self, action: str) -> Dict[str, Any]:
+        endpoint = self.endpoints.get(action)
+        if endpoint is None:
+            raise NotImplementedError(f"broker.provider={self.provider} 未配置 endpoint: {action}")
+        default_endpoint = dict(self.DEFAULT_ENDPOINTS.get(action, {}))
+        if isinstance(endpoint, str):
+            default_endpoint["path"] = endpoint
+            return default_endpoint
+        if not isinstance(endpoint, dict):
+            raise ValueError(f"broker.endpoints.{action} 必须是字符串或字典")
+        default_endpoint.update(endpoint)
+        return default_endpoint
+
+    def _format_path(self, path: str, path_params: Optional[Dict[str, Any]] = None) -> str:
+        params = {"account_id": self.account_id}
+        params.update(path_params or {})
+        formatted = str(path or "")
+        for key, value in params.items():
+            formatted = formatted.replace("{" + key + "}", quote(str(value), safe=""))
+        return formatted.lstrip("/")
+
+    def _build_headers(self, has_body: bool = False) -> Dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if has_body:
+            headers["Content-Type"] = "application/json"
+        headers.update({str(key): str(value) for key, value in self.headers.items()})
+
+        auth_headers = self.auth_config.get("headers", {})
+        if isinstance(auth_headers, dict):
+            headers.update({str(key): str(value) for key, value in auth_headers.items()})
+
+        token = self.api_key
+        auth_type = str(self.auth_config.get("type", "bearer" if token else "none")).lower()
+        if token and auth_type not in {"none", "disabled"}:
+            header_name = str(self.auth_config.get("header_name", "Authorization"))
+            if auth_type == "bearer":
+                prefix = str(self.auth_config.get("prefix", "Bearer "))
+                headers[header_name] = f"{prefix}{token}"
+            else:
+                headers[header_name] = str(token)
+        return headers
+
+    def _compact_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        return {key: value for key, value in params.items() if value is not None and value != ""}
+
+    def _select_response_path(self, payload: Any, response_path: Optional[str]) -> Any:
+        if not response_path:
+            return payload
+        current = payload
+        for part in str(response_path).split("."):
+            if isinstance(current, dict):
+                current = current.get(part)
+            elif isinstance(current, list):
+                current = current[int(part)]
+            else:
+                return None
+        return current
+
+    def _request(
+        self,
+        action: str,
+        path_params: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+        json_payload: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        if not self.base_url:
+            raise ValueError("broker.base_url 不能为空；使用 live_trading.adapter=real 前请配置真实券商 REST 地址")
+
+        endpoint = self._endpoint_config(action)
+        method = str(endpoint.get("method", "GET")).upper()
+        path = self._format_path(str(endpoint.get("path", "")), path_params=path_params)
+        url = f"{self.base_url}/{path}"
+        query_params = dict(endpoint.get("params", {}) or {})
+        query_params.update(params or {})
+        if self.account_id and bool(endpoint.get("include_account_id", True)):
+            query_params.setdefault("account_id", self.account_id)
+
+        response = self.session.request(
+            method,
+            url,
+            params=self._compact_params(query_params),
+            json=json_payload,
+            headers=self._build_headers(has_body=json_payload is not None),
+            timeout=self.timeout_seconds,
+        )
+        response.raise_for_status()
+        if not getattr(response, "content", b""):
+            payload = {}
+        else:
+            payload = response.json()
+        response_path = endpoint.get("response_path") or self.response_paths.get(action)
+        return self._select_response_path(payload, response_path)
+
+    def _as_list(self, payload: Any, candidate_keys: List[str]) -> Iterable[Dict[str, Any]]:
+        if payload is None:
+            return []
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for key in candidate_keys + ["data", "items", "results"]:
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return value
+        return []
 
     def submit_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        self._not_implemented("submit_order")
+        response = self._request("submit_order", json_payload=payload)
+        return response if isinstance(response, dict) else {}
 
     def cancel_order(self, broker_order_id: str) -> Dict[str, Any]:
-        self._not_implemented("cancel_order")
+        response = self._request("cancel_order", path_params={"broker_order_id": broker_order_id})
+        return response if isinstance(response, dict) else {}
 
     def get_order(self, broker_order_id: str) -> Dict[str, Any]:
-        self._not_implemented("get_order")
+        response = self._request("get_order", path_params={"broker_order_id": broker_order_id})
+        return response if isinstance(response, dict) else {}
 
     def list_open_orders(self, symbol: Optional[str] = None) -> Iterable[Dict[str, Any]]:
-        self._not_implemented("list_open_orders")
+        params = {"symbol": symbol} if symbol else {}
+        payload = self._request("list_open_orders", params=params)
+        return self._as_list(payload, ["open_orders", "orders"])
 
     def list_fills(self, symbol: Optional[str] = None) -> Iterable[Dict[str, Any]]:
-        self._not_implemented("list_fills")
+        params = {"symbol": symbol} if symbol else {}
+        payload = self._request("list_fills", params=params)
+        return self._as_list(payload, ["fills", "executions"])
 
     def get_account(self) -> Dict[str, Any]:
-        self._not_implemented("get_account")
+        response = self._request("get_account")
+        return response if isinstance(response, dict) else {}
 
     def list_positions(self) -> Iterable[Dict[str, Any]]:
-        self._not_implemented("list_positions")
+        payload = self._request("list_positions")
+        return self._as_list(payload, ["positions"])
 
 
 class PaperBrokerAdapter(BrokerAdapter):

@@ -3,8 +3,13 @@
 
 deepseek:
   api_key: your-deepseek-api-key
-  base_url: https://api.deepseek.com/v1
+  base_url: https://api.deepseek.com
 
 openai:
   api_key: your-openai-api-key
   base_url: https://api.openai.com/v1
+
+# 可选：真实券商 REST 接入。key 名需与 broker.provider 一致。
+generic_rest:
+  api_key: your-broker-api-token
+  base_url: https://your-broker-api

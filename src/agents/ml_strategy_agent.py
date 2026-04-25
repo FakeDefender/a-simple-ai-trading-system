@@ -16,6 +16,7 @@ import pandas as pd
 
 from src.utils.data_loader import DataLoader
 from src.utils.data_processor import DataProcessor
+from src.utils.llm_event_factor import generate_llm_event_factor
 from src.utils.risk_calculator import RiskCalculator
 
 
@@ -160,10 +161,18 @@ class MLStrategyAgent:
             },
         }
 
+    def _ma_pair(self, current_data: pd.Series) -> tuple[float, float]:
+        fast_window = int(self.strategy_params.get("fast_ma", 10))
+        slow_window = int(self.strategy_params.get("slow_ma", 20))
+        fast_ma = current_data.get(f"ma{fast_window}", current_data.get("ma5", 0.0))
+        slow_ma = current_data.get(f"ma{slow_window}", current_data.get("ma20", 0.0))
+        return float(fast_ma), float(slow_ma)
+
     def _check_long_entry_conditions(self, current_data: pd.Series, market_indicators: Dict[str, Any]) -> bool:
+        fast_ma, slow_ma = self._ma_pair(current_data)
         return all(
             [
-                float(current_data.get("ma5", 0.0)) >= float(current_data.get("ma20", 0.0)),
+                fast_ma >= slow_ma,
                 float(current_data.get("rsi", 50.0)) >= self.strategy_params["rsi_long_threshold"],
                 float(current_data.get("macd", 0.0)) >= float(current_data.get("signal", 0.0)),
                 float(current_data.get("volume_ratio", 1.0)) >= self.strategy_params["min_volume_ratio"],
@@ -172,9 +181,10 @@ class MLStrategyAgent:
         )
 
     def _check_short_entry_conditions(self, current_data: pd.Series, market_indicators: Dict[str, Any]) -> bool:
+        fast_ma, slow_ma = self._ma_pair(current_data)
         return self.strategy_params["allow_short"] and all(
             [
-                float(current_data.get("ma5", 0.0)) <= float(current_data.get("ma20", 0.0)),
+                fast_ma <= slow_ma,
                 float(current_data.get("rsi", 50.0)) <= self.strategy_params["rsi_short_threshold"],
                 float(current_data.get("macd", 0.0)) <= float(current_data.get("signal", 0.0)),
                 float(current_data.get("volume_ratio", 1.0)) >= self.strategy_params["min_volume_ratio"],
@@ -183,22 +193,54 @@ class MLStrategyAgent:
         )
 
     def _check_long_exit_conditions(self, current_data: pd.Series) -> bool:
+        fast_ma, slow_ma = self._ma_pair(current_data)
         return any(
             [
-                float(current_data.get("ma5", 0.0)) < float(current_data.get("ma20", 0.0)),
+                fast_ma < slow_ma,
                 float(current_data.get("rsi", 50.0)) <= self.strategy_params["rsi_exit_long"],
                 float(current_data.get("macd", 0.0)) < float(current_data.get("signal", 0.0)),
             ]
         )
 
     def _check_short_exit_conditions(self, current_data: pd.Series) -> bool:
+        fast_ma, slow_ma = self._ma_pair(current_data)
         return any(
             [
-                float(current_data.get("ma5", 0.0)) > float(current_data.get("ma20", 0.0)),
+                fast_ma > slow_ma,
                 float(current_data.get("rsi", 50.0)) >= self.strategy_params["rsi_exit_short"],
                 float(current_data.get("macd", 0.0)) > float(current_data.get("signal", 0.0)),
             ]
         )
+
+    def _latest_snapshot_for_llm(self, current_data: pd.Series, market_indicators: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "close": float(current_data.get("close", 0.0)),
+            "rsi": float(current_data.get("rsi", 50.0)),
+            "macd": float(current_data.get("macd", 0.0)),
+            "signal": float(current_data.get("signal", 0.0)),
+            "volume_ratio": float(current_data.get("volume_ratio", 1.0)),
+            "trend_strength": float(market_indicators.get("trend_strength", 0.0)),
+            "market_strength": float(market_indicators.get("market_strength", 0.5)),
+            "volatility": float(market_indicators.get("volatility", 0.0)),
+        }
+
+    def _apply_event_factor_filter(self, target_position: int, event_factor: Dict[str, Any]) -> int:
+        if target_position == 0:
+            return 0
+        confidence = float(event_factor.get("confidence_score", 0.0) or 0.0)
+        event_risk = float(event_factor.get("event_risk_score", 0.0) or 0.0)
+        direction_hint = str(event_factor.get("direction_hint", "neutral"))
+
+        # Keep this conservative: LLM can only suppress or de-risk a signal.
+        if event_risk >= 0.75:
+            return 0
+        if confidence < 0.35:
+            return 0
+        if target_position > 0 and direction_hint == "bearish":
+            return 0
+        if target_position < 0 and direction_hint == "bullish":
+            return 0
+        return target_position
 
     def generate_signals(self, market_data: pd.DataFrame) -> pd.DataFrame:
         if market_data is None or market_data.empty:
@@ -210,6 +252,11 @@ class MLStrategyAgent:
         signals["market_strength"] = 0.5
         signals["risk_level"] = "unknown"
         signals["advisor_signal"] = "neutral"
+        signals["event_sentiment_score"] = 0.0
+        signals["event_risk_score"] = 0.0
+        signals["event_confidence_score"] = 0.0
+        signals["event_direction_hint"] = "neutral"
+        signals["event_factor_source"] = "disabled"
 
         current_position = 0
         for i in range(len(market_data)):
@@ -217,6 +264,12 @@ class MLStrategyAgent:
             current_data = history.iloc[-1]
             indicators = self.data_processor.calculate_market_indicators(history)
             advice = self._get_agent_advice(history)
+            event_factor = generate_llm_event_factor(
+                config=self.config,
+                symbol=self.config.get("data", {}).get("symbol", "unknown"),
+                latest_snapshot=self._latest_snapshot_for_llm(current_data, indicators),
+                llm_client=self.llm,
+            )
             advisor_signal = advice["trading_advisor"].get("current_signal", "neutral")
             risk_level = advice["risk_analyst"].get("risk_level", "unknown")
             market_strength = float(indicators.get("market_strength", 0.5))
@@ -232,11 +285,17 @@ class MLStrategyAgent:
             elif current_position == -1 and self._check_short_exit_conditions(current_data):
                 target_position = 0
 
+            target_position = self._apply_event_factor_filter(target_position, event_factor)
             current_position = target_position
             signals.iloc[i, signals.columns.get_loc("signal")] = target_position
             signals.iloc[i, signals.columns.get_loc("market_strength")] = market_strength
             signals.iloc[i, signals.columns.get_loc("risk_level")] = risk_level
             signals.iloc[i, signals.columns.get_loc("advisor_signal")] = advisor_signal
+            signals.iloc[i, signals.columns.get_loc("event_sentiment_score")] = float(event_factor.get("sentiment_score", 0.0))
+            signals.iloc[i, signals.columns.get_loc("event_risk_score")] = float(event_factor.get("event_risk_score", 0.0))
+            signals.iloc[i, signals.columns.get_loc("event_confidence_score")] = float(event_factor.get("confidence_score", 0.0))
+            signals.iloc[i, signals.columns.get_loc("event_direction_hint")] = str(event_factor.get("direction_hint", "neutral"))
+            signals.iloc[i, signals.columns.get_loc("event_factor_source")] = str(event_factor.get("source", "disabled"))
 
         self.logger.info(
             "信号统计 - 多头持仓: %s, 空头持仓: %s, 空仓: %s",

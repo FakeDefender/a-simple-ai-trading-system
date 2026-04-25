@@ -97,6 +97,14 @@ def get_results_root() -> str:
     return os.path.join(get_project_root(), "results")
 
 
+def _project_relative_path(path: str) -> str:
+    try:
+        path = os.path.relpath(path, get_project_root())
+    except ValueError:
+        path = os.path.abspath(path)
+    return path.replace("\\", "/")
+
+
 def _resolve_project_path(relative_path: str) -> str:
     project_root = get_project_root()
     normalized = os.path.normpath(os.path.join(project_root, relative_path))
@@ -267,7 +275,7 @@ def _collect_artifacts(output_dir: str) -> List[Dict[str, Any]]:
         artifacts.append(
             {
                 "name": name,
-                "relative_path": os.path.relpath(path, get_project_root()).replace("\\", "/"),
+                "relative_path": _project_relative_path(path),
                 "size_bytes": int(stat.st_size),
                 "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
             }
@@ -416,7 +424,7 @@ def _build_run_payload(
     payload = {
         "run_type": run_type,
         "output_dir": output_dir,
-        "relative_output_dir": os.path.relpath(output_dir, get_project_root()).replace("\\", "/"),
+        "relative_output_dir": _project_relative_path(output_dir),
         "symbols": symbols,
         "summary": _sanitize_for_json(summary),
         "artifacts": _collect_artifacts(output_dir),
@@ -672,7 +680,7 @@ def run_live_pipeline(
     payload = service.run_once(force_update=force_update, save_results=save_results)
 
     live_output_dir = payload.get("results_dir") or runtime_config["live_service"]["results_root"]
-    live_symbols = [payload.get("symbol", runtime_config.get("data", {}).get("symbol", "unknown"))]
+    live_symbols = payload.get("symbols") or [payload.get("symbol", runtime_config.get("data", {}).get("symbol", "unknown"))]
     run_context = _write_run_context(live_output_dir, "live", runtime_config, live_symbols)
     return _build_run_payload(
         run_type="live",
@@ -722,11 +730,11 @@ def get_run_chart_data(relative_path: str) -> Dict[str, Any]:
         file_path = os.path.join(normalized, file_name)
         if not os.path.exists(file_path):
             continue
-        relative_file_path = os.path.relpath(file_path, get_project_root()).replace("\\", "/")
+        relative_file_path = _project_relative_path(file_path)
         charts.append(_build_chart_payload(file_path, relative_file_path, spec))
 
     return {
-        "relative_output_dir": os.path.relpath(normalized, get_project_root()).replace("\\", "/"),
+        "relative_output_dir": _project_relative_path(normalized),
         "charts": charts,
     }
 
@@ -736,7 +744,7 @@ def get_file_preview(relative_path: str, limit: int = 50) -> Dict[str, Any]:
     if not os.path.isfile(normalized):
         raise FileNotFoundError("文件不存在")
 
-    relative_file_path = os.path.relpath(normalized, get_project_root()).replace("\\", "/")
+    relative_file_path = _project_relative_path(normalized)
     suffix = os.path.splitext(normalized)[1].lower()
     payload = {
         "path": relative_file_path,
@@ -806,7 +814,7 @@ def get_run_details(relative_path: str) -> Dict[str, Any]:
     details = {
         "run_type": _detect_run_type_from_files(file_names),
         "output_dir": normalized,
-        "relative_output_dir": os.path.relpath(normalized, project_root).replace("\\", "/"),
+        "relative_output_dir": _project_relative_path(normalized),
         "artifacts": _collect_artifacts(normalized),
         "summary": None,
         "metrics": _load_json_if_exists(os.path.join(normalized, "metrics.json")),
@@ -829,7 +837,7 @@ def list_result_runs(limit: int = 20) -> List[Dict[str, Any]]:
     runs: List[Dict[str, Any]] = []
     for directory in _find_result_directories(get_results_root()):
         stat = os.stat(directory)
-        relative_output_dir = os.path.relpath(directory, get_project_root()).replace("\\", "/")
+        relative_output_dir = _project_relative_path(directory)
         details = get_run_details(relative_output_dir)
         runs.append(
             {

@@ -2,6 +2,8 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta
 
+__test__ = False
+
 def test_stooq_symbol(symbol):
     """测试Stooq是否支持某个股票代码"""
     try:
@@ -24,58 +26,63 @@ def test_stooq_symbol(symbol):
         print(f"❌ {symbol}: 错误 - {str(e)}")
         return False
 
-# 测试一些常见的小公司股票代码
-test_symbols = [
-    # 科技类小公司
-    'amd.us',      # AMD
-    'pltr.us',     # Palantir
-    'rblx.us',     # Roblox
-    'coin.us',     # Coinbase
-    'rivn.us',     # Rivian
-    'lcid.us',     # Lucid Motors
-    'nio.us',      # 蔚来汽车
-    'xpev.us',     # 小鹏汽车
-    'li.us',       # 理想汽车
-    
-    # 生物医药小公司
-    'mrna.us',     # Moderna
-    'bntx.us',     # BioNTech
-    'nvax.us',     # Novavax
-    
-    # 新能源/清洁能源
-    'enph.us',     # Enphase Energy
-    'sedg.us',     # SolarEdge
-    'plug.us',     # Plug Power
-    'fcel.us',     # FuelCell Energy
-    
-    # 金融科技
-    'sq.us',       # Block (Square)
-    'pypl.us',     # PayPal
-    'hood.us',     # Robinhood
-    
-    # 游戏/娱乐
-    'u.us',        # Unity Software
-    'ttd.us',      # The Trade Desk
-    
-    # 其他新兴公司
-    'snow.us',     # Snowflake
-    'crwd.us',     # CrowdStrike
-    'zm.us',       # Zoom
-    'docu.us',     # DocuSign
-    'roku.us',     # Roku
-    'spot.us',     # Spotify
-]
+def main():
+    # 测试一些常见的小公司股票代码
+    test_symbols = [
+        # 科技类小公司
+        'amd.us',      # AMD
+        'pltr.us',     # Palantir
+        'rblx.us',     # Roblox
+        'coin.us',     # Coinbase
+        'rivn.us',     # Rivian
+        'lcid.us',     # Lucid Motors
+        'nio.us',      # 蔚来汽车
+        'xpev.us',     # 小鹏汽车
+        'li.us',       # 理想汽车
 
-print("🔍 测试Stooq支持的小公司股票代码...")
-print("=" * 50)
+        # 生物医药小公司
+        'mrna.us',     # Moderna
+        'bntx.us',     # BioNTech
+        'nvax.us',     # Novavax
 
-supported_symbols = []
-for symbol in test_symbols:
-    if test_stooq_symbol(symbol):
-        supported_symbols.append(symbol)
+        # 新能源/清洁能源
+        'enph.us',     # Enphase Energy
+        'sedg.us',     # SolarEdge
+        'plug.us',     # Plug Power
+        'fcel.us',     # FuelCell Energy
 
-print("\n" + "=" * 50)
-print(f"📊 总结: 测试了 {len(test_symbols)} 个代码，支持 {len(supported_symbols)} 个")
-print("\n✅ 支持的股票代码:")
-for symbol in supported_symbols:
-    print(f"  - {symbol}") 
+        # 金融科技
+        'sq.us',       # Block (Square)
+        'pypl.us',     # PayPal
+        'hood.us',     # Robinhood
+
+        # 游戏/娱乐
+        'u.us',        # Unity Software
+        'ttd.us',      # The Trade Desk
+
+        # 其他新兴公司
+        'snow.us',     # Snowflake
+        'crwd.us',     # CrowdStrike
+        'zm.us',       # Zoom
+        'docu.us',     # DocuSign
+        'roku.us',     # Roku
+        'spot.us',     # Spotify
+    ]
+
+    print("测试 Stooq 支持的小公司股票代码...")
+    print("=" * 50)
+
+    supported_symbols = []
+    for symbol in test_symbols:
+        if test_stooq_symbol(symbol):
+            supported_symbols.append(symbol)
+
+    print("\n" + "=" * 50)
+    print(f"总结: 测试了 {len(test_symbols)} 个代码，支持 {len(supported_symbols)} 个")
+    print("\n支持的股票代码:")
+    for symbol in supported_symbols:
+        print(f"  - {symbol}")
+
+
+if __name__ == "__main__":
+    main()

@@ -132,7 +132,7 @@ def _build_llm_prompt(
         "base_recommendations": recommendations[:3],
     }
     return (
-        "输出严格 JSON，不要 Markdown。字段: headline, key_findings, risk_notes, "
+        "输出严格 json，不要 Markdown。字段: headline, key_findings, risk_notes, "
         "parameter_suggestions, next_steps。每个数组最多 3 项，中文短句。"
         "parameter_suggestions 每项包含 name,current,suggested,reason。"
         "禁止承诺收益，禁止建议直接实盘下单。数据如下:\n"
@@ -199,6 +199,9 @@ def generate_ai_review(
             max_tokens=int(llm_config.get("review_max_tokens", 600)),
             timeout=float(llm_config.get("review_timeout", llm_config.get("timeout", 12.0))),
             model=llm_config.get("review_model"),
+            response_format={"type": "json_object"},
+            thinking=str(llm_config.get("review_thinking", llm_config.get("thinking", "disabled"))),
+            reasoning_effort=llm_config.get("review_reasoning_effort", llm_config.get("reasoning_effort")),
         )
         parsed = _parse_llm_review(raw_text or "")
         if not parsed:

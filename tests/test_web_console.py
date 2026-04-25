@@ -139,7 +139,7 @@ class TestWebConsole(unittest.TestCase):
             "llm:\n"
             "  enabled: true\n"
             "  provider: deepseek\n"
-            "  model: deepseek-chat\n"
+            "  model: deepseek-v4-flash\n"
         )
         with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "unit-test-key"}), mock.patch(
             "src.web_app.run_main_pipeline", side_effect=fake_run_pipeline

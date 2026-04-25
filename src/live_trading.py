@@ -27,8 +27,10 @@ def main():
         return
 
     summary = payload["summary"]
+    symbols = payload.get("symbols") or [payload.get("symbol", "unknown")]
     logger.info(
-        "live trading service 完成: latest=%s, processed_rows=%s, final_equity=%.2f, total_return=%.2f%%, rejected=%s, canceled=%s, output=%s",
+        "live trading service 完成: symbols=%s, latest=%s, processed_rows=%s, final_equity=%.2f, total_return=%.2f%%, rejected=%s, canceled=%s, output=%s",
+        ",".join(symbols),
         payload["latest_timestamp"],
         payload["processed_rows"],
         summary["final_equity"],

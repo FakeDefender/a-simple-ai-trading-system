@@ -184,6 +184,12 @@ portfolio:
   adapter: paper
 ```
 
+说明：
+
+- `portfolio.enabled=true` 且 `data.symbols` 大于 1 时，系统会启用组合级选标与仓位分配
+- 当前这套组合约束会同时作用于组合 `paper trading` 和多标的 `live dry-run`
+- `max_positions / max_gross_exposure / max_symbol_allocation` 会共同限制组合暴露
+
 ### Live Trading 配置
 
 ```yaml
@@ -224,6 +230,8 @@ live_risk:
 - `MarketSession` 现在支持多段交易时段，例如 A 股午休场景
 - `live_trading.sessions` 可以直接定义多段时段
 - 如果不显式写 `sessions`，则会优先使用 `market` 里解析出的 profile 默认时段
+- 当 `data.symbols` 大于 1 且 `portfolio.enabled=true` 时，`LiveTradingService` 会切到多标的组合 live dry-run 引擎
+- 多标的 live 结果会额外输出 `live_symbol_history.csv`
 
 ### Broker 配置
 
@@ -234,6 +242,28 @@ broker:
   base_url: ''
   account_id: ''
   timeout_seconds: 10.0
+  endpoints:
+    submit_order:
+      method: POST
+      path: /orders
+    cancel_order:
+      method: POST
+      path: /orders/{broker_order_id}/cancel
+    get_order:
+      method: GET
+      path: /orders/{broker_order_id}
+    list_open_orders:
+      method: GET
+      path: /orders/open
+    list_fills:
+      method: GET
+      path: /fills
+    get_account:
+      method: GET
+      path: /account
+    list_positions:
+      method: GET
+      path: /positions
 ```
 
 说明：
@@ -241,7 +271,8 @@ broker:
 - 当 `live_trading.adapter=paper_live` 时，系统使用内置 dry-run broker
 - 当 `live_trading.adapter=real` 时，系统走 `RealBrokerAdapter`
 - `RealBrokerAdapter` 不直接内置任何券商 SDK，需要你实现 `BrokerAPIClient`
-- `ConfigurableRESTBrokerClient` 只是一个通用 REST 协议占位，不包含具体下单细节
+- `ConfigurableRESTBrokerClient` 已支持按 `broker.endpoints` 配置 REST 路径、HTTP method、鉴权 header 和响应 `response_path`
+- 对于 QMT / miniQMT / WebSocket 回报等非标准协议，仍建议单独实现一个 `BrokerAPIClient`
 - 市场规则和券商接入现在是两层：市场负责约束，broker 负责下单回报
 
 ### Live Service 配置
@@ -263,6 +294,42 @@ live_service:
 - `poll_interval_seconds` 控制轮询间隔
 - `force_update_each_cycle` 决定每轮是否强制刷新行情
 - `save_results_each_cycle` 决定是否每轮持久化结果文件
+
+### DeepSeek LLM 配置
+
+LLM 只用于研究复盘与参数建议，不参与下单决策。API key 放在本地 `src/config/api_keys.yaml` 或环境变量 `DEEPSEEK_API_KEY`，不要写入 `config.yaml`。
+
+```yaml
+llm:
+  enabled: true
+  provider: deepseek
+  model: deepseek-v4-flash
+  review_model: deepseek-v4-flash
+  base_url: https://api.deepseek.com
+  temperature: 0.2
+  max_tokens: 1200
+  review_max_tokens: 1200
+  timeout: 120.0
+  review_timeout: 120.0
+  thinking: disabled
+  review_thinking: disabled
+  reasoning_effort:
+  event_factor_enabled: false
+  event_factor_model: deepseek-v4-flash
+  event_factor_max_tokens: 300
+  event_factor_timeout: 30.0
+  event_factor_thinking: disabled
+  event_factor_reasoning_effort:
+```
+
+说明：
+
+- `deepseek-v4-flash` 适合作为默认快速复盘模型
+- 需要更强推理时可改成 `deepseek-v4-pro`
+- 需要思考模式时设置 `thinking: enabled`，可选 `reasoning_effort: low / medium / high`
+- 复盘接口会使用 JSON Output，失败时自动回退到本地规则复盘
+- `event_factor_enabled=true` 时，LLM 会输出结构化事件因子（情绪、风险、置信度、方向提示）并进入信号流水线
+- 事件因子当前只做保守过滤，不会直接生成买卖订单
 
 ## 运行方式
 
@@ -305,6 +372,19 @@ python src/web_app.py
 - 选中结果后可查看权益曲线 / 账户曲线
 - JSON、CSV、日志文本和图片产物可直接在页面内预览，也可以单独打开
 - 产物文件可直接从页面打开
+
+### 5. 运行 Walk-Forward 验证
+
+```bash
+python scripts/run_walk_forward.py
+```
+
+说明：
+
+- 默认按 `84` 根训练窗口、`21` 根测试窗口、`21` 根步长滚动
+- 结果会写到 `results/walk_forward/<时间戳>/`
+- 输出包括 `walk_forward_summary.json`、`walk_forward_folds.json` 和 `walk_forward_folds.csv`
+- 当前版本主要用于固定参数的单标的稳定性验证，不做窗口内自动调参
 
 ## 输出结果
 
@@ -350,9 +430,10 @@ python src/web_app.py
 
 1. 保持 `LiveTradingEngine` 和 `LiveTradingService` 不动
 2. 通过 `market.profile` 或 `market.symbol_profiles` 固化目标市场规则
-3. 为目标券商实现一个 `BrokerAPIClient`
-4. 在 `submit_order` / `cancel_order` / `get_order` / `list_open_orders` / `list_fills` / `get_account` / `list_positions` 里填真实接口
-5. 把配置改成：
+3. REST 风格接口可先配置 `ConfigurableRESTBrokerClient` 的 `broker.endpoints`
+4. 非 REST 或协议差异较大的券商，为目标券商实现一个 `BrokerAPIClient`
+5. 在 `submit_order` / `cancel_order` / `get_order` / `list_open_orders` / `list_fills` / `get_account` / `list_positions` 里填真实接口
+6. 把配置改成：
 
 ```yaml
 market:

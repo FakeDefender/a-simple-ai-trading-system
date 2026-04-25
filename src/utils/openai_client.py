@@ -27,6 +27,8 @@ class OpenAIClient:
         self.base_url = self.llm_config.get("base_url") or self.model_config.get("base_url")
         self.timeout = float(self.llm_config.get("timeout", 120.0))
         self.max_retries = int(self.llm_config.get("max_retries", 0))
+        self.default_thinking = str(self.llm_config.get("thinking", "disabled")).lower()
+        self.reasoning_effort = self.llm_config.get("reasoning_effort")
         self._client: Optional[OpenAI] = None
 
         if not self.llm_config.get("enabled", False):
@@ -61,6 +63,9 @@ class OpenAIClient:
         max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,
         model: Optional[str] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+        thinking: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> Optional[str]:
         if not self.is_available():
             return None
@@ -68,15 +73,27 @@ class OpenAIClient:
         request_options: Dict[str, Any] = {}
         if timeout is not None:
             request_options["timeout"] = float(timeout)
+        if response_format is not None:
+            request_options["response_format"] = response_format
 
-        response = self._client.chat.completions.create(
-            model=model or self.model,
-            messages=[
+        thinking_mode = str(thinking or self.default_thinking or "disabled").lower()
+        if self.model_type == "deepseek" and thinking_mode in {"enabled", "disabled"}:
+            request_options["extra_body"] = {"thinking": {"type": thinking_mode}}
+            selected_effort = reasoning_effort or self.reasoning_effort
+            if thinking_mode == "enabled" and selected_effort:
+                request_options["reasoning_effort"] = selected_effort
+
+        payload: Dict[str, Any] = {
+            "model": model or self.model,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=float(self.llm_config.get("temperature", 0.2)),
-            max_tokens=int(max_tokens if max_tokens is not None else self.llm_config.get("max_tokens", 1200)),
+            "max_tokens": int(max_tokens if max_tokens is not None else self.llm_config.get("max_tokens", 1200)),
             **request_options,
-        )
+        }
+        if not (self.model_type == "deepseek" and thinking_mode == "enabled"):
+            payload["temperature"] = float(self.llm_config.get("temperature", 0.2))
+
+        response = self._client.chat.completions.create(**payload)
         return response.choices[0].message.content if response.choices else None
